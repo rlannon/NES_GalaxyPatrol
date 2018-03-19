@@ -1,0 +1,14 @@
+$0000#buttons1#F0
+$0000#DEVELO#F0
+$C039#LoadPalettes#0
+$C053#Forever#0
+$E000#palette#1
+$C048#LoadPalettesLoop#0
+$C072#ReadController1#0
+$0000#CDROM#F0
+$0001#MAGICKIT#F0
+$C07E#ReadController1Loop#0
+$C017#clrmem#0
+$C000#RESET#0
+$C056#NMI#0
+$C089#vblankwait#0
