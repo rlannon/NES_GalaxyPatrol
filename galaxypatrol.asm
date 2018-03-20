@@ -146,10 +146,10 @@ GameEngine:
   CMP #STATEPLAYING
   BEQ EnginePlaying	;; game is in the game loop
 GameEngineDone:
-  JSR UpdatePlayerPosition ;; update player position, we should rewrite to update all sprites...
+  JSR UpdateSprites	;; update all sprites
   RTI			;; return from interrupt, where we will wait for the next one
 
-;;;;; More game engine data
+;;;;; Our Game Engine Routines
 
 EngineTitle:
   JMP GameEngineDone	;; Unconditional jump to GameEngineDone so we can continue with the loop
@@ -167,63 +167,60 @@ EnginePlaying:
   ;; then we have a separate subroutine just to draw the updates?
   ;; We will have some rewriting, but the program flow might make more sense if we do it this way
 
+  ;; First, let's do MoveRight
+MoveRight:
+  LDA buttons		; first, check user input -- are they hitting right on D pad?
+  AND #%00000001
+  BEQ MoveRightDone	; if not, we are done
+
+  LDA playerX		; if they are, load the current X position
+  CLC			; clear carry
+  ADC speedx		; add the x speed to the x position
+  STA playerX		; store that in the player x position
+
+  LDA playerX		; now we must check to see if player x > wall
+  CMP #RIGHTWALL	; compare the x position to the right wall
+  BCC MoveRightDone	; if it's less than or equal, then we are done
+  LDA #RIGHTWALL	; otherwise, load the wall value into the accumulator
+  STA playerX		; and then set the playerX value equal to the wall
+MoveRightDone:
+
+MoveLeft:
+  LDA buttons
+  AND #%00000010
+  BEQ MoveLeftDone
+
+  LDA playerX		; same logic as MoveRight here
+  SEC
+  SBC speedx
+  STA playerX
+
+  LDA playerX
+  CMP #LEFTWALL
+  BCS MoveLeftDone	; use BCS because we need to make sure they are above or equal to the left wall
+  LDA #LEFTWALL
+  STA playerX
+MoveLeftDone:
+
   JMP GameEngineDone
 
-;;;;; Our Subroutines
-;;;;; We want these last -- otherwise, where will the RTS take us to? Some random address
-;;;;; So, to avoid a crash, we put it last and make sure we have a JMP instruction above
+;;;;;     Our Subroutines   ;;;;;
 
-;;;;; Check controls and update the player position ;;;;;
+;;; Update our sprite positions ;;;
 
-UpdatePlayerPosition:	; there may be a better way to do this, but this is what I have thus far
-  LDA buttons		; get the button state
-  AND #%00000010	; see if it's left
-  BEQ MoveLeftDone	; if not, check right (see moveLeftDone)
-  LDX #$00		; else, set x to 0
-MoveLeft:
-  LDA $0203,X		; load the X position of our char. We will use X to loop so we edit the whole sprite
-  SEC			; set the carry flag so we can subtract
-  SBC speedx		; subtract 2 -- our speed
-  STA $0203,X		; store the result in the player's X position (essentially, update it)
-  TXA			; Now we must update X -- increase it so we can edit all sprites for the player
-  CLC			; clear carry for addition
-  ADC #$04		; add 4 so our next address will be $0207
-  TAX			; transfer A to X
-  CPX #$10		; if X is not 16 (if we haven't done this 4 times), do again
-  BNE MoveLeft
-MoveLeftDone:		; now we check to see if the player tried to move right
-  LDA buttons
-  AND #%00000001
-  BEQ MoveRightDone
-  LDX #$00
-MoveRight:		; similar procedure as moving left, but we add to X instead of subtracting
-  LDA $0203,X
+UpdateSprites:
+  ;; Update player position...this might not be the best way, but it works for now at least
+  LDA playerX
+  STA $0203
+  STA $020B
   CLC
-  ADC speedx
-  STA $0203,X
-  TXA
-  CLC
-  ADC #$04
-  TAX
-  CPX #$10
-  BNE MoveRight
-MoveRightDone:		; now we check to see if the player pressed enter
-  LDA buttons
-  AND #%00010000
-  BEQ StartDone
-  LDX #$00
-StartAndPause:		; currently, this code is just to test that we can get to our pause state
-  LDA $0200,X
-  CLC
-  ADC speedy
-  STA $0200,X
-  TXA
-  CLC
-  ADC #$04
-  TAX
-  CPX #$10
-  BNE StartAndPause
-StartDone:		; finally, now that all of our controls have been tested, let's return
+  ADC #$08
+  STA $0207
+  STA $020F
+
+  ;; once we add in obstacles like rocks and fuel, we will update them here as well
+  ;; those routines will probably simply be decrementing the Y position
+
   RTS
 
 ;;;;; Read Controller Input ;;;;;
