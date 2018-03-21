@@ -17,18 +17,18 @@ buttons		.rs 1
 playerX		.rs 1
 playerY		.rs 1
 score		.rs 1
-speedy		.rs 1
-speedx		.rs 1
+speedy		.rs 1 ; object speed in the y direction
+speedx		.rs 1 ; player's speed in the x direction
 
 ;; Some Constants
 STATETITLE	= $00	; Displaying title screen
 STATEPLAYING	= $01	; playing the game; draw graphics, check paddles, etc.
 STATEGAMEOVER	= $02	; game over sequence
 
-RIGHTWALL	= $F4	; We don't want the play to be able to move across like PacMan
-LEFTWALL	= $04	; So, we will set boundaries. When the player reaches it, we will stop them
+RIGHTWALL	= $F0	; We don't want the play to be able to move across like PacMan
+LEFTWALL	= $02	; So, we will set boundaries. When the player reaches it, we will stop them
 
-;; Banks
+;; Bank 0
 
   .bank 0
   .org $C000
@@ -85,35 +85,44 @@ LoadSpritesLoop:
   CPX #$10
   BNE LoadSpritesLoop
 
+LoadBackground:
+  LDX #$00
+LoadBackgroundLoop:
 ;; Background Load Sequence Here
 
+LoadAttribute:
+  LDX #$00
+LoadAttributeLoop:
 ;; Attribute Load Sequence Here
 
-;; Let's set some initial stats here -- speed of the ship in X and Y, and the score
+;; Let's set some initial stats here
+  ; initial player speed
   LDA #$02
   STA speedx
-
-  LDA #$02
+  ; initial object speed
+  LDA #$01
   STA speedy
-
+  ; initial score
   LDA #$00
   STA score
-
-;; Set starting game state
+  ; player position
+  LDA #$28    ;; This won't change at all
+  STA playerY
+  LDA #$80
+  STA playerX
+  ;; Set starting game state
   LDA #STATEPLAYING
   STA gamestate
-
-;; Finish up our initialization -- begin rendering graphics
+  ;; Finish up our initialization -- begin rendering graphics
   LDA #%10000000   ; enable NMI, sprites from Pattern Table 1
   STA $2000
-
   LDA #%00010000   ; enable sprites
   STA $2001
 
 Forever:
   JMP Forever	; jump back to Forever, waiting for NMI
 
-NMI:
+NMI:              ; This interrupt routine will be called every time VBlank begins
   LDA #$00
   STA $2003
   LDA #$02
@@ -179,8 +188,8 @@ MoveRight:
   STA playerX		; store that in the player x position
 
   LDA playerX		; now we must check to see if player x > wall
-  CMP #RIGHTWALL	; compare the x position to the right wall
-  BCC MoveRightDone	; if it's less than or equal, then we are done
+  CMP #RIGHTWALL	; compare the x position to the right wall. Carry flag set if A >= M
+  BCC MoveRightDone	; if it's less than or equal, then we are done (carry flag not set if less than RIGHTWALL)
   LDA #RIGHTWALL	; otherwise, load the wall value into the accumulator
   STA playerX		; and then set the playerX value equal to the wall
 MoveRightDone:
@@ -197,7 +206,7 @@ MoveLeft:
 
   LDA playerX
   CMP #LEFTWALL
-  BCS MoveLeftDone	; use BCS because we need to make sure they are above or equal to the left wall
+  BCS MoveLeftDone	; must be above or equal to left wall, so carry flag SHOULD be set, not clear
   LDA #LEFTWALL
   STA playerX
 MoveLeftDone:
