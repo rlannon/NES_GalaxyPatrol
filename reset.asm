@@ -114,8 +114,10 @@ PlayerVariablesInit:
   STA gamestate
   LDA #$00
   STA scroll
-  lda #$00
   sta nametable
+  
+  sta sleep_flag
+  sta draw_flag
 
   jsr sound_engine_init ; initialize the sound engine
 

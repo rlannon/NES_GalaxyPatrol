@@ -23,6 +23,8 @@ speedx		          .rs 1 ; object's speed in the x direction
 scroll              .rs 1
 nametable           .rs 1
 collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel
+sleep_flag          .rs 1
+draw_flag           .rs 1
 
 ;---------------------------------------------------
 ;; Constants
@@ -60,28 +62,26 @@ BOTTOMWALL = $D8
 ;;;;  Main Game Loop  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MainGameLoop:
-  ;; put game logic here. Use a "sleep" flag to prevent us from doing too much per frame
-  JMP MainGameLoop
+main_loop:
+  ; code here does not execute. Figure this out later.
+  jmp main_loop 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;      NMI     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-NMI:              ; This interrupt routine will be called every time VBlank begins
-  ; transfer all registers to the stack -- in case we decide to move game logic later
+NMI:      ; This interrupt routine will be called every time VBlank begins
+  php     ; begin by pushing all register values to the stack
   pha
-  php
   txa
   pha
   tya
   pha
 
   INC scroll
-
+  
 NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
   lda scroll
-  cmp #$00
   bne NTSwapCheckDone
 
 NTSwap:           ; if we have scrolled all the way to the second, display the second, not first
@@ -115,18 +115,23 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   LDA #%00011110   ; enable sprites, enable background, no clipping on left side
   STA $2001
 
-  ; Handle the actual game logic
-  JSR ReadController
-  JSR GameEngine
+  jsr ReadController
+  jsr GameEngine
+
+  lda #$00
+  sta sleep_flag
 
   pla
   tay
   pla
   tax 
-  plp 
-  pla 
+  pla
+  plp     ; we pushed them at the beginning, so pull them back in reverse order
 
   RTI
+
+IRQ:      ; we aren't using IRQ, at least for now
+  RTI 
 
 GameEngine:
   LDA gamestate
@@ -196,10 +201,15 @@ MoveUp:
   AND #%00001000
   BEQ MoveUpDone
 
+  lda draw_flag
+  bne MoveUpDone
+
   LDA playerY		; same logic as MoveRight here
   SEC
   SBC speedy
   STA playerY
+
+  inc draw_flag
 
   LDA playerY
   CMP #TOPWALL
@@ -213,10 +223,15 @@ MoveDown:
   AND #%00000100
   BEQ MoveDownDone	; if not, we are done
 
+  lda draw_flag
+  bne MoveDownDone
+
   LDA playerY		; if they are, load the current Y position
   CLC			; clear carry
   ADC speedy		; add the y speed to the y position
   STA playerY		; store that in the player y position
+
+  inc draw_flag
 
   LDA playerY		; now we must check to see if player y > wall
   CMP #BOTTOMWALL	; compare the y position to the right wall. Carry flag set if A >= M
@@ -271,8 +286,9 @@ UpdateSprites:
   STA $0208
   STA $020C
   ;; once we add in obstacles like rocks and fuel, we will update them here as well
-  ;; those routines will probably simply be decrementing the Y position
-UpdateSpritesDone:
+  ;; those routines will probably simply be decrementing the X position
+  lda #$00
+  sta draw_flag
   RTS
 
 ;;;;; Read Controller Input ;;;;;
