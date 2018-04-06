@@ -119,6 +119,10 @@ PlayerVariablesInit:
   sta sleep_flag
   sta draw_flag
 
+  sta frame_count_down
+  sta frame_count_up
+  sta random_return
+
   jsr sound_engine_init ; initialize the sound engine
 
 PPU_Init:

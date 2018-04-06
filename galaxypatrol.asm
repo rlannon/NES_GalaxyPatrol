@@ -15,16 +15,25 @@
 
 gamestate         	.rs 1	; .rs 1 means reserve 1 byte of space
 buttons	          	.rs 1
-playerX	          	.rs 1
-playerY	           	.rs 1
 score           		.rs 1
-speedy	          	.rs 1 ; player's speed in the y direction
-speedx		          .rs 1 ; object's speed in the x direction
 scroll              .rs 1
 nametable           .rs 1
+
+playerX	          	.rs 1
+playerY	           	.rs 1
+speedy	          	.rs 1 ; player's speed in the y direction
+speedx		          .rs 1 ; object's speed in the x direction
+obj_y               .rs 1 ; used to count the object's y position
+num_objects         .rs 1 ; used to count the number of objects to be generated
+
 collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel
 sleep_flag          .rs 1
 draw_flag           .rs 1
+
+frame_count_down    .rs 1 ; used to count the number of frames passed since last pressed up/down
+frame_count_up      .rs 2
+
+random_return       .rs 1
 
 ;---------------------------------------------------
 ;; Constants
@@ -35,6 +44,15 @@ STATEPAUSE  = $03 ; we are in pause
 
 TOPWALL = $0A
 BOTTOMWALL = $D8
+
+BUTTON_A = %10000000
+BUTTON_B = %01000000
+BUTTON_SELECT = %00100000
+BUTTON_START = %00010000
+BUTTON_UP = %00001000
+BUTTON_DOWN = %00000100
+BUTTON_LEFT = %00000010
+BUTTON_RIGHT = %00000001
 
 ;---------------------------------------------------
 ;; Our first 8kb bank. Include the sound engine here
@@ -64,6 +82,12 @@ BOTTOMWALL = $D8
 
 main_loop:
   ; code here does not execute. Figure this out later.
+;   inc sleep_flag 
+; .loop:
+;   lda sleep_flag
+;   bne .loop 
+
+;   jsr gen_random 
   jmp main_loop 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -121,6 +145,9 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   lda #$00
   sta sleep_flag
 
+  inc frame_count_down  ; increment the number of frames that have occurred since last button press
+  inc frame_count_up
+
   pla
   tay
   pla
@@ -170,39 +197,37 @@ EnginePlaying:
 
 PressSelect:
   LDA buttons
-  AND #%00100000
-  BEQ PressSelectDone
+  AND #BUTTON_SELECT
+  BEQ .done
 
-  JSR sound_disable 
-PressSelectDone:
+.done:
 
-PressStart:
+PressStart:       ; to test if this works, place an asteroid at randomly generated y position
   LDA buttons
-  AND #%00010000
-  BEQ PressStartDone
+  AND #BUTTON_START
+  BEQ .done
 
-  LDA #%00111000
-  STA $4000
-
-  LDA note_ptr ; this makes 1 byte
-  ASL A   ; but, we are indexing to a table of words. So, we must multiply by 2 to make the byte into a word
-  TAY 
-  LDA note_table, y
-  STA SQ1_LOW
-  LDA note_table+1, y
-  STA SQ1_HIGH
-
+  jsr put_y
+  lda obj_y
+  sta $0210
+  lda #$04
+  sta $0211
   lda #$00
-  sta note_move_flag
-PressStartDone:
+  sta $0212
+  lda #$80
+  sta $0213
+.done:
 
 MoveUp:
   LDA buttons
-  AND #%00001000
-  BEQ MoveUpDone
+  AND #BUTTON_UP
+  BEQ .done
 
   lda draw_flag
-  bne MoveUpDone
+  bne .done
+
+  lda #$00
+  sta frame_count_up
 
   LDA playerY		; same logic as MoveRight here
   SEC
@@ -213,21 +238,24 @@ MoveUp:
 
   LDA playerY
   CMP #TOPWALL
-  BCS MoveUpDone	; must be above or equal to left wall, so carry flag SHOULD be set, not clear
+  BCS .done	    ; must be above or equal to left wall, so carry flag SHOULD be set, not clear
   LDA #TOPWALL
   STA playerY
-MoveUpDone:
+.done:
 
 MoveDown:
   LDA buttons		; first, check user input -- are they hitting down on D pad?
-  AND #%00000100
-  BEQ MoveDownDone	; if not, we are done
+  AND #BUTTON_DOWN
+  BEQ .done   	; if not, we are done
 
   lda draw_flag
-  bne MoveDownDone
+  bne .done
+
+  lda #$00          ; whenever the player hits "down" on the d pad, clear the frame_count variable
+  sta frame_count_down
 
   LDA playerY		; if they are, load the current Y position
-  CLC			; clear carry
+  CLC			      ; clear carry
   ADC speedy		; add the y speed to the y position
   STA playerY		; store that in the player y position
 
@@ -235,41 +263,46 @@ MoveDown:
 
   LDA playerY		; now we must check to see if player y > wall
   CMP #BOTTOMWALL	; compare the y position to the right wall. Carry flag set if A >= M
-  BCC MoveDownDone	; if it's less than or equal, then we are done (carry flag not set if less than RIGHTWALL)
+  BCC .done	    ; if it's less than or equal, then we are done (carry flag not set if less than RIGHTWALL)
   LDA #BOTTOMWALL	; otherwise, load the wall value into the accumulator
   STA playerY		; and then set the playerX value equal to the wall
-MoveDownDone:
+.done:
 
 PressLeft:
   lda buttons
-  and #%00000010
-  beq PressLeftDone
+  and #BUTTON_LEFT
+  beq .done 
 
   lda note_move_flag
-  bne PressLeftDone
+  bne .done 
   
   dec note_ptr
   lda #$01
   sta note_move_flag
-PressLeftDone:
+.done:
 
 PressRight:
   lda buttons
-  and #%00000001
-  beq PressRightDone
+  and #BUTTON_RIGHT 
+  beq .done
 
   lda note_move_flag
-  bne PressRightDone
+  bne .done
 
   inc note_ptr
   lda #$01
   sta note_move_flag
-PressRightDone:
+.done:
 
   ; Next, we need to check for collisions
 CheckCollision:
-  JMP CheckCollisionDone
-CheckCollisionDone:
+  JMP .done
+.done:
+
+  ; generate some random numbers and make assignments
+RandomGen:
+  jsr gen_random
+.done:
 
   JMP GameEngineDone  ; we are done with the game engine code, so let's go to that label
 
@@ -307,6 +340,32 @@ ReadControllerLoop:
   BNE ReadControllerLoop
   RTS
 
+;;;;; Generate number of objects ;;;;;
+
+;; this PRNG uses a linear feedback shift register
+
+gen_random:             ; generate the number of objects (asteroids/fuel) to be placed on the screen
+  ldx frame_count_down  ; we will iterate 8 times
+  lda frame_count_up+0  ; load low byte of the number of frames since last down-button press
+.loop:
+  asl a 
+  rol frame_count_up+1  ; load into high byte of 16-bit frame_count
+  bcc .done
+  eor #$2D              ; apply XOR feedback whenever a 1 is shifted out
+.done:
+  dex
+  bne .loop 
+  sta random_return 
+  cmp #$0   ; reload flags
+  rts 
+
+put_y:      ; subroutine to put our random number in the asteroid's y position
+  lda random_return 
+  sta obj_y
+  rts 
+
+;;;;; wait for vblank ;;;;; 
+
 vblankwait:	; subroutine for PPU initialization
   BIT $2002
   BPL vblankwait
@@ -322,11 +381,14 @@ palette:
   .db $22,$1C,$15,$14,  $22,$02,$38,$3C,  $22,$1C,$15,$14,  $22,$02,$38,$3C   ;;sprite palette
 
 sprites:
+     ; player
      ;vert tile attr horiz
   .db $80, $00, $00, $10   ;sprite 0
   .db $80, $01, $00, $18   ;sprite 1
   .db $88, $02, $00, $10
   .db $88, $03, $00, $18
+    ; asteroid
+  .db $80, $04, $00, $80
 
 background:
   .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
