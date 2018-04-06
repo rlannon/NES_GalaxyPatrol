@@ -44,6 +44,8 @@ STATEPAUSE  = $03 ; we are in pause
 
 TOPWALL = $0A
 BOTTOMWALL = $D8
+LEFTWALL = $04
+RIGHTWALL = $F4
 
 BUTTON_A = %10000000
 BUTTON_B = %01000000
@@ -195,17 +197,37 @@ EnginePauseDone:
 EnginePlaying:
   ; First, we check to see if we need to handle controllers
 
+PressA: ;show asteroid
+  lda buttons
+  and #BUTTON_A 
+  beq .done 
+
+  lda #$00
+  sta $0212
+.done:
+
+PressB: ;hide asteroid
+  lda buttons 
+  and #BUTTON_B
+  beq .done
+
+  lda #%00100000
+  sta $0212
+.done:
+
 PressSelect:
   LDA buttons
   AND #BUTTON_SELECT
   BEQ .done
-
 .done:
 
 PressStart:       ; to test if this works, place an asteroid at randomly generated y position
   LDA buttons
   AND #BUTTON_START
   BEQ .done
+
+  lda draw_flag
+  bne .done
 
   jsr put_y
   lda obj_y
@@ -214,8 +236,10 @@ PressStart:       ; to test if this works, place an asteroid at randomly generat
   sta $0211
   lda #$00
   sta $0212
-  lda #$80
+  lda #RIGHTWALL
   sta $0213
+
+  inc draw_flag
 .done:
 
 MoveUp:
@@ -320,6 +344,16 @@ UpdateSprites:
   STA $020C
   ;; once we add in obstacles like rocks and fuel, we will update them here as well
   ;; those routines will probably simply be decrementing the X position
+
+  ;; move fuel position across screen
+  dec $0213
+  lda $0213
+  cmp #LEFTWALL
+  bcs .done ; if sprite has not reached edge of screen, we are done (carry flag not set)
+.rem_loop:  ; if the sprite has reached the edge, we need to remove it
+  lda #%00100000  ; this puts the sprite behind the background, effectively removing it
+  sta $0212
+.done:
   lda #$00
   sta draw_flag
   RTS
