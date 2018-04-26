@@ -24,9 +24,10 @@ playerY	           	.rs 1
 speedy	          	.rs 1 ; player's speed in the y direction
 speedx		          .rs 1 ; object's speed in the x direction
 obj_y               .rs 1 ; used to count the object's y position
+obj_x               .rs 1
 num_objects         .rs 1 ; used to count the number of objects to be generated
 
-collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel
+collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel ?
 sleep_flag          .rs 1
 draw_flag           .rs 1
 
@@ -110,12 +111,12 @@ NTSwapCheck:      ; checks to see if we have scrolled all the way to the second 
   lda scroll
   bne NTSwapCheckDone
 
-NTSwap:           ; if we have scrolled all the way to the second, display the second, not first
+NTSwap:           ; if we have scrolled all the way to the second, display second nametable
   lda nametable ; 0 or 1
   eor #$01
-  sta nametable
+  sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
 
-NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
+NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics (sprites)
   LDA #$00
   STA $2003       ; Write zero to the OAM register because we want to use DMA
   LDA #$02
@@ -129,10 +130,12 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   STA $2006
 
   ; scroll the screen
+  lda $2002   ; reading PPUSTATUS resets the address latch
+
   lda scroll
-  sta $2005
+  sta $2005   ; $2005 is the PPUSCROLL register; high byte is X scroll
   lda #$00
-  sta $2005
+  sta $2005   ; low byte is Y scroll
 
   ;; PPU clean-up; ensure rendering the next frame starts properly.
   LDA #%10010000   ; enable NMI, sprites from Pattern Table 0, background from Pattern Table 1
@@ -190,9 +193,19 @@ EngineTitle:  ; what do we do on the title screen?
 EngineGameOver:
   JMP GameEngineDone
 
-EnginePause
-  JMP EnginePauseDone
-EnginePauseDone:
+EnginePause:          ; create a "pause" screen here
+  ;; This causes all sorts of weird shit to happen
+
+  jsr ReadController  ; get controller input
+
+  lda buttons
+  and #BUTTON_START   ; if the user presses "START", then go back to playing
+  beq .done
+
+  lda #STATEPLAYING 
+  sta gamestate
+.done:
+  jmp GameEngineDone
 
 EnginePlaying:
   ; First, we check to see if we need to handle controllers
@@ -200,10 +213,22 @@ EnginePlaying:
 PressA: ;show asteroid
   lda buttons
   and #BUTTON_A 
-  beq .done 
+  beq .done
 
+  lda draw_flag
+  bne .done
+
+  jsr put_y
+  lda obj_y
+  sta $0210
+  lda #$04
+  sta $0211
   lda #$00
   sta $0212
+  lda #RIGHTWALL  ; start the object at the right wall
+  sta $0213       ; set the sprite position
+
+  inc draw_flag
 .done:
 
 PressB: ;hide asteroid
@@ -226,20 +251,9 @@ PressStart:       ; to test if this works, place an asteroid at randomly generat
   AND #BUTTON_START
   BEQ .done
 
-  lda draw_flag
-  bne .done
-
-  jsr put_y
-  lda obj_y
-  sta $0210
-  lda #$04
-  sta $0211
-  lda #$00
-  sta $0212
-  lda #RIGHTWALL
-  sta $0213
-
-  inc draw_flag
+  lda #STATEPAUSE
+  sta gamestate
+  jmp GameEngineDone
 .done:
 
 MoveUp:
@@ -320,8 +334,47 @@ PressRight:
 
   ; Next, we need to check for collisions
 CheckCollision:
-  JMP .done
+
+  ; First, check to see if there is a collision on X axis --
+  ; playerX < obj_x < (playerX + $10)
+
+  ; the object location should be between the first and last pixel of the player
+
+  ; note this only tests the top left location of the object
+  ; this means it is possible for the player to touch the object without triggering a collision
+  ; the algorithm works pretty well, so we will keep it for now
+
+  lda playerX
+  cmp obj_x   ; carry flag is set if A > memory (playerX > obj_x)
+  bcs .done   ; so if the flag is set, we are done
+  CLC
+  adc #$10
+  cmp obj_x ; carry flag is clear if A < memory (playerX+$10 < obj_x)
+  bcc .done   ; so if the flag is clear, we are done
+
+  ; Next, check to see if there is a collision on the Y axis --
+  ; playerY < obj_y < (playerY + $10)
+
+  lda playerY
+  cmp obj_y 
+  bcs .done 
+  clc 
+  adc #$10
+  cmp obj_y 
+  bcc .done 
+
+.collide: ; we execute this branch if we never have to go to .done
+  lda #%00111000
+  sta SQ1_ENV
+  lda #C2
+  asl A
+  tay 
+  lda note_table, y
+  sta SQ1_LOW
+  lda note_table+1, y 
+  sta SQ1_HIGH
 .done:
+  ; if any of the conditions for a collision are NOT met, we go here
 
   ; generate some random numbers and make assignments
 RandomGen:
@@ -345,9 +398,10 @@ UpdateSprites:
   ;; once we add in obstacles like rocks and fuel, we will update them here as well
   ;; those routines will probably simply be decrementing the X position
 
-  ;; move fuel position across screen
-  dec $0213
-  lda $0213
+  ;; move obj position across screen
+  dec obj_x
+  lda obj_x
+  sta $0213
   cmp #LEFTWALL
   bcs .done ; if sprite has not reached edge of screen, we are done (carry flag not set)
 .rem_loop:  ; if the sprite has reached the edge, we need to remove it
@@ -394,16 +448,17 @@ gen_random:             ; generate the number of objects (asteroids/fuel) to be 
   rts 
 
 put_y:      ; subroutine to put our random number in the asteroid's y position
-  lda random_return 
+  lda random_return
+  cmp #TOPWALL
+  bcs .continue
+  lda #TOPWALL
+.continue:
+  cmp #BOTTOMWALL
+  bcc .done
+  lda #BOTTOMWALL
+.done:
   sta obj_y
   rts 
-
-;;;;; wait for vblank ;;;;; 
-
-vblankwait:	; subroutine for PPU initialization
-  BIT $2002
-  BPL vblankwait
-  RTS
 
 ;---------------------------------------------------
 ;; 4th 8kb bank -- Data tables

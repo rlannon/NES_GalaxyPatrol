@@ -123,6 +123,9 @@ PlayerVariablesInit:
   sta frame_count_up
   sta random_return
 
+  sta obj_y
+  sta obj_x
+
   jsr sound_engine_init ; initialize the sound engine
 
 PPU_Init:
@@ -132,4 +135,11 @@ PPU_Init:
   LDA #%00010000   ; enable sprites
   STA $2001
 
-  rts 
+  rts
+
+  ;;;;; wait for vblank ;;;;; 
+
+vblankwait:	; subroutine for PPU initialization
+  BIT $2002
+  BPL vblankwait
+  RTS
