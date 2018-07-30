@@ -16,8 +16,15 @@
 gamestate         	.rs 1	; .rs 1 means reserve 1 byte of space
 buttons	          	.rs 1
 score           		.rs 1
+
 scroll              .rs 1
 nametable           .rs 1
+
+columnLow           .rs 1 ; low byte of column address
+columnHigh          .rs 1 ; high byte of column address
+columnNumber        .rs 1
+sourceLow           .rs 1
+sourceHigh          .rs 1
 
 playerX	          	.rs 1
 playerY	           	.rs 1
@@ -43,11 +50,13 @@ STATEPLAYING	= $01	; playing the game; draw graphics, check paddles, etc.
 STATEGAMEOVER	= $02	; game over sequence
 STATEPAUSE  = $03 ; we are in pause
 
+; define our window limits
 TOPWALL = $0A
 BOTTOMWALL = $D8
 LEFTWALL = $04
 RIGHTWALL = $F4
 
+; constants for button presses so we don't have to write out binary every time
 BUTTON_A = %10000000
 BUTTON_B = %01000000
 BUTTON_SELECT = %00100000
@@ -77,20 +86,25 @@ BUTTON_RIGHT = %00000001
 
   .include "reset.asm"
 
-  jsr reset ; put this in a separate file for code that is easier to read
+  ; RESET goes here -- points to $C000
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;  Main Game Loop  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-main_loop:
-  ; code here does not execute. Figure this out later.
-;   inc sleep_flag 
-; .loop:
-;   lda sleep_flag
-;   bne .loop 
+main_loop: 
+  ; our main game loop
+.loop:
+  lda sleep_flag
+  bne .loop 
 
-;   jsr gen_random 
+  ; jsr gen_random ; already exists in game engine, comment out for now
+
+  jsr ReadController
+  jsr GameEngine
+
+  inc sleep_flag
+
   jmp main_loop 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -105,7 +119,7 @@ NMI:      ; This interrupt routine will be called every time VBlank begins
   tya
   pha
 
-  INC scroll
+  inc scroll
   
 NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
   lda scroll
@@ -115,8 +129,23 @@ NTSwap:           ; if we have scrolled all the way to the second, display secon
   lda nametable ; 0 or 1
   eor #$01
   sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
+  ; basically, if we are at 0, we switch to 1, and if we are at 1, we switch to 0
 
-NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics (sprites)
+NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
+
+NewColumnCheck: ; we must first check to see if it's time to draw a new column
+  lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide
+  and #%00000111  ; see if divisible by 8
+  bne .done ; if it is not time, we are done
+  jsr DrawNewColumn ; else, go to this subroutine
+
+  lda columnNumber
+  clc
+  adc #$01
+  and #%00111111 ; only 128 columns of data, throw away top bit to wrap
+  sta columnNumber 
+.done  
+
   LDA #$00
   STA $2003       ; Write zero to the OAM register because we want to use DMA
   LDA #$02
@@ -134,6 +163,7 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
 
   lda scroll
   sta $2005   ; $2005 is the PPUSCROLL register; high byte is X scroll
+
   lda #$00
   sta $2005   ; low byte is Y scroll
 
@@ -143,9 +173,6 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   STA $2000
   LDA #%00011110   ; enable sprites, enable background, no clipping on left side
   STA $2001
-
-  jsr ReadController
-  jsr GameEngine
 
   lda #$00
   sta sleep_flag
@@ -290,7 +317,7 @@ MoveDown:
   bne .done
 
   lda #$00          ; whenever the player hits "down" on the d pad, clear the frame_count variable
-  sta frame_count_down
+  sta frame_count_down  ; should we try to use a 16 bit number as seed?
 
   LDA playerY		; if they are, load the current Y position
   CLC			      ; clear carry
@@ -384,6 +411,68 @@ RandomGen:
   JMP GameEngineDone  ; we are done with the game engine code, so let's go to that label
 
 ;;;;;     Our Subroutines   ;;;;;
+
+;;; Draw a new column to the background ;;;
+
+DrawNewColumn:
+  ; calculate starting PPU address of the new column
+  ; start with low byte
+  lda scroll
+  lsr a
+  lsr a 
+  lsr a ; shifting right 3 times divides by 8
+  sta columnLow ; $00 to $1F, screen is 32 tiles wide
+  ; time for the high byte; we will use the current nametable
+  lda nametable
+  eor #$01 ; invert lowest bit -- a = #$00 or #$01
+  asl a ; a = #$00 or #$02
+  asl a ; a = #$00 or #$04
+  clc 
+  adc #$20 ; add high byte of nametable base address ($2000)
+  sta columnHigh ; this is now the high byte of the address to write to in the column
+
+  lda columnNumber
+  asl a 
+  asl a 
+  asl a 
+  asl a 
+  asl a
+  sta sourceLow 
+  lda columnNumber
+  and #%11111000
+  lsr a 
+  lsr a 
+  lsr a 
+  sta sourceHigh
+
+  LDA sourceLow       ; column data start + offset = address to load column data from
+  CLC 
+  ADC #LOW(columnData)
+  STA sourceLow
+  LDA sourceHigh
+  ADC #HIGH(columnData)
+  STA sourceHigh 
+
+DrawColumn:  
+  lda #%00000100 ; value will set PPU to +32 mode
+  sta $2000
+  ; +32 mode allows us to jump down to the next byte in the column rather than the next byte in the row
+  lda $2002 ; reset the latch
+  lda columnHigh
+  sta $2006
+  lda columnLow
+  sta $2006
+  ldx #$1E ; copy 30 bytes
+  ldy #$00
+.loop:
+  lda [sourceLow], y
+  sta $2007
+  iny
+  dex
+  bne .loop
+
+  ; now we are done
+  rts
 
 ;;; Update our sprite positions ;;;
 
@@ -479,15 +568,8 @@ sprites:
     ; asteroid
   .db $80, $04, $00, $80
 
-background:
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
+columnData:
+  .incbin "bkg.bin"
 
 ;---------------------------------------------------
 ;; Vectors

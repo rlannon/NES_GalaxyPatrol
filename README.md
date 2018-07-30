@@ -31,13 +31,13 @@ Building a .nes file in UNIX/Linux is also easy, and you can follow the same sor
 
 ## Built With
 
-*[Visual Studio Code]() - text editor
-*[NESASM3]() - to make .nes files from assembly
-*[FCEUX]() - NES emulator
+* [Visual Studio Code]() - text editor
+* [NESASM3]() - to make .nes files from assembly
+* [FCEUX]() - NES emulator
 
 ## Authors
 
-*_Riley Lannon_ - Programmer and debugger
+* _Riley Lannon_ - Programmer and debugger
 
 ## License
 
