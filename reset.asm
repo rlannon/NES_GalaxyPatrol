@@ -63,6 +63,7 @@ PlayerVariablesInit:
   
   sta sleep_flag
   sta draw_flag
+  sta sprite_draw_flag
 
   sta frame_count_down
   sta frame_count_up

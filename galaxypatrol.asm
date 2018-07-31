@@ -37,6 +37,7 @@ num_objects         .rs 1 ; used to count the number of objects to be generated
 collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel ?
 sleep_flag          .rs 1
 draw_flag           .rs 1
+sprite_draw_flag    .rs 1
 
 frame_count_down    .rs 1 ; used to count the number of frames passed since last pressed up/down
 frame_count_up      .rs 2
@@ -74,7 +75,7 @@ BUTTON_RIGHT = %00000001
   .include "sound_engine.asm"
 
 ;---------------------------------------------------
-;; Second 8kb bank
+;; Second 8kb bank.
   .bank 1
   .org $A000
 
@@ -104,6 +105,9 @@ main_loop:
   jsr GameEngine
 
   inc sleep_flag
+  inc scroll
+
+  jsr NTSwapCheck
 
   jmp main_loop 
 
@@ -119,34 +123,32 @@ NMI:      ; This interrupt routine will be called every time VBlank begins
   tya
   pha
 
-  inc scroll
-  
-NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
-  lda scroll
-  bne NTSwapCheckDone
+  ; inc scroll ; moved to game logic
 
-NTSwap:           ; if we have scrolled all the way to the second, display second nametable
-  lda nametable ; 0 or 1
-  eor #$01
-  sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
-  ; basically, if we are at 0, we switch to 1, and if we are at 1, we switch to 0
+  ; NT Swap Checks used to be here...
 
-NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
-
-NewColumnCheck: ; we must first check to see if it's time to draw a new column
-  lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide
-  and #%00000111  ; see if divisible by 8
-  bne .done ; if it is not time, we are done
-  jsr DrawNewColumn ; else, go to this subroutine
-
-  lda columnNumber
-  clc
-  adc #$01
-  and #%00111111 ; only 128 columns of data, throw away top bit to wrap
-  sta columnNumber 
-.done  
-
+  lda draw_flag
+  beq BufferTransferDone
+  ; this gets executed in the event that draw_flag is set
+  lda $2002
+  lda $0301
+  sta $2006
+  lda $0302
+  sta $2006
+  lda $0303
+  sta $2000
+  ldx $0300
+  ldy #$00
+BufferTransferLoop:
+  lda $0304, y
+  sta $2007
+  iny
+  dex
+  bne BufferTransferLoop
+BufferTransferDone:
   LDA #$00
+  sta draw_flag   ; clear the draw flag
+  STA $2000       ; put PPU back to +1 mode
   STA $2003       ; Write zero to the OAM register because we want to use DMA
   LDA #$02
   STA $4014       ; Write to OAM using DMA -- copies bytes at $0200 to OAM
@@ -288,7 +290,7 @@ MoveUp:
   AND #BUTTON_UP
   BEQ .done
 
-  lda draw_flag
+  lda sprite_draw_flag
   bne .done
 
   lda #$00
@@ -299,7 +301,7 @@ MoveUp:
   SBC speedy
   STA playerY
 
-  inc draw_flag
+  inc sprite_draw_flag
 
   LDA playerY
   CMP #TOPWALL
@@ -313,7 +315,7 @@ MoveDown:
   AND #BUTTON_DOWN
   BEQ .done   	; if not, we are done
 
-  lda draw_flag
+  lda sprite_draw_flag
   bne .done
 
   lda #$00          ; whenever the player hits "down" on the d pad, clear the frame_count variable
@@ -324,7 +326,7 @@ MoveDown:
   ADC speedy		; add the y speed to the y position
   STA playerY		; store that in the player y position
 
-  inc draw_flag
+  inc sprite_draw_flag
 
   LDA playerY		; now we must check to see if player y > wall
   CMP #BOTTOMWALL	; compare the y position to the right wall. Carry flag set if A >= M
@@ -412,6 +414,34 @@ RandomGen:
 
 ;;;;;     Our Subroutines   ;;;;;
 
+;;; NT and Scroll Maintenance ;;;
+
+NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
+  lda scroll
+  bne NTSwapCheckDone
+
+NTSwap:           ; if we have scrolled all the way to the second, display second nametable
+  lda nametable ; 0 or 1
+  eor #$01
+  sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
+  ; basically, if we are at 0, we switch to 1, and if we are at 1, we switch to 0
+
+NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
+
+NewColumnCheck: ; we must first check to see if it's time to draw a new column
+  lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide
+  and #%00000111  ; see if divisible by 8
+  bne .done ; if it is not time, we are done
+  jsr DrawNewColumn
+
+  lda columnNumber
+  clc
+  adc #$01
+  and #%00111111 ; only 128 columns of data, throw away top bit to wrap
+  sta columnNumber 
+.done:
+  rts
+
 ;;; Draw a new column to the background ;;;
 
 DrawNewColumn:
@@ -454,23 +484,40 @@ DrawNewColumn:
   STA sourceHigh 
 
 DrawColumn:  
-  lda #%00000100 ; value will set PPU to +32 mode
-  sta $2000
+  ;lda #%00000100 ; value will set PPU to +32 mode
+  ;sta $2000
+  ; this is new:
+  lda #$1E
+  sta $0300 ; $a300
   ; +32 mode allows us to jump down to the next byte in the column rather than the next byte in the row
-  lda $2002 ; reset the latch
+  ; OLD CODE:
+  ; lda $2002 ; reset the latch
+  ; lda columnHigh
+  ; sta $2006
+  ; lda columnLow
+  ; sta $2006
+
+  ; NEW CODE:
   lda columnHigh
-  sta $2006
+  sta $0301 ; a301
   lda columnLow
-  sta $2006
+  sta $0302 ; a302
+
+  lda #%00000100
+  sta $0303 ; a303
+
   ldx #$1E ; copy 30 bytes
   ldy #$00
 .loop:
+  ; asteroid drawing code will go somewhere in here
+  ; it must overwrite the byte for its y address
   lda [sourceLow], y
-  sta $2007
+  sta $0304, y ; a304 + y
   iny
   dex
   bne .loop
-
+.done:
+  inc draw_flag
   ; now we are done
   rts
 
@@ -486,7 +533,7 @@ UpdateSprites:
   STA $020C
 .done:
   lda #$00
-  sta draw_flag
+  sta sprite_draw_flag
   RTS
 
 ;;;;; Read Controller Input ;;;;;
