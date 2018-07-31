@@ -476,7 +476,7 @@ DrawColumn:
 
 ;;; Update our sprite positions ;;;
 
-UpdateSprites:
+UpdateSprites: 
   LDA playerY
   STA $0200
   STA $0204
@@ -484,18 +484,6 @@ UpdateSprites:
   ADC #$08
   STA $0208
   STA $020C
-  ;; once we add in obstacles like rocks and fuel, we will update them here as well
-  ;; those routines will probably simply be decrementing the X position
-
-  ;; move obj position across screen
-  dec obj_x
-  lda obj_x
-  sta $0213
-  cmp #LEFTWALL
-  bcs .done ; if sprite has not reached edge of screen, we are done (carry flag not set)
-.rem_loop:  ; if the sprite has reached the edge, we need to remove it
-  lda #%00100000  ; this puts the sprite behind the background, effectively removing it
-  sta $0212
 .done:
   lda #$00
   sta draw_flag
@@ -536,6 +524,8 @@ gen_random:             ; generate the number of objects (asteroids/fuel) to be 
   cmp #$0   ; reload flags
   rts 
 
+; Note: we must update put_y to reflect our next goal -- putting the asteroids in the *background*, not as sprites
+; this will allow us to have many more asteroids on the screen at one time
 put_y:      ; subroutine to put our random number in the asteroid's y position
   lda random_return
   cmp #TOPWALL
