@@ -30,16 +30,17 @@ playerX	          	.rs 1
 playerY	           	.rs 1
 speedy	          	.rs 1 ; player's speed in the y direction
 speedx		          .rs 1 ; object's speed in the x direction
-obj_y               .rs 1 ; used to count the object's y position
-obj_x               .rs 1
+asteroid_y          .rs 1 ; used to count the asteroid's y position
+fuel_x              .rs 1 ; used to track the fuel object (limit per nametable?)
+fuel_y              .rs 1
 num_objects         .rs 1 ; used to count the number of objects to be generated
 
 collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel ?
 sleep_flag          .rs 1
 draw_flag           .rs 1
-sprite_draw_flag    .rs 1
+sprite_draw_flag    .rs 1 ; used in the game engine to determine whether we should update sprite positions
 
-frame_count_down    .rs 1 ; used to count the number of frames passed since last pressed up/down
+frame_count_down    .rs 2 ; used to count the number of frames passed since last pressed up/down
 frame_count_up      .rs 2
 
 random_return       .rs 1
@@ -75,7 +76,7 @@ BUTTON_RIGHT = %00000001
   .include "sound_engine.asm"
 
 ;---------------------------------------------------
-;; Second 8kb bank.
+;; Second 8kb bank
   .bank 1
   .org $A000
 
@@ -107,7 +108,7 @@ main_loop:
   inc sleep_flag
   inc scroll
 
-  jsr NTSwapCheck
+  jsr DrawRoutine
 
   jmp main_loop 
 
@@ -149,6 +150,7 @@ BufferTransferDone:
   LDA #$00
   sta draw_flag   ; clear the draw flag
   STA $2000       ; put PPU back to +1 mode
+
   STA $2003       ; Write zero to the OAM register because we want to use DMA
   LDA #$02
   STA $4014       ; Write to OAM using DMA -- copies bytes at $0200 to OAM
@@ -239,7 +241,7 @@ EnginePause:          ; create a "pause" screen here
 EnginePlaying:
   ; First, we check to see if we need to handle controllers
 
-PressA: ;show asteroid
+PressA:
   lda buttons
   and #BUTTON_A 
   beq .done
@@ -247,26 +249,16 @@ PressA: ;show asteroid
   lda draw_flag
   bne .done
 
-  jsr put_y
-  lda obj_y
-  sta $0210
-  lda #$04
-  sta $0211
-  lda #$00
-  sta $0212
-  lda #RIGHTWALL  ; start the object at the right wall
-  sta $0213       ; set the sprite position
-
-  inc draw_flag
+  lda num_objects
+  eor #$01
+  sta num_objects 
 .done:
 
-PressB: ;hide asteroid
+PressB:
   lda buttons 
   and #BUTTON_B
   beq .done
 
-  lda #%00100000
-  sta $0212
 .done:
 
 PressSelect:
@@ -363,45 +355,49 @@ PressRight:
 
   ; Next, we need to check for collisions
 CheckCollision:
-
-  ; First, check to see if there is a collision on X axis --
-  ; playerX < obj_x < (playerX + $10)
-
-  ; the object location should be between the first and last pixel of the player
-
-  ; note this only tests the top left location of the object
-  ; this means it is possible for the player to touch the object without triggering a collision
-  ; the algorithm works pretty well, so we will keep it for now
-
-  lda playerX
-  cmp obj_x   ; carry flag is set if A > memory (playerX > obj_x)
-  bcs .done   ; so if the flag is set, we are done
-  CLC
-  adc #$10
-  cmp obj_x ; carry flag is clear if A < memory (playerX+$10 < obj_x)
-  bcc .done   ; so if the flag is clear, we are done
-
-  ; Next, check to see if there is a collision on the Y axis --
-  ; playerY < obj_y < (playerY + $10)
-
-  lda playerY
-  cmp obj_y 
-  bcs .done 
+  ; We do two things in this routine -- 
+  ; 1) check for a collision against a background object;
+  ; 2) check for a collision with a sprite
+  ; This will determine how we resolve the collision
+.bkg_chk: ; check for background collision by reading the background value around the player
+  ; the reason we would want the whole field of view in the buffer is for checking this...
+  ; because it's currently not all stored in the buffer, we need to get the data during vblank...
+.sprite_chk:  ; check for sprite collision by checking the fuel's edges against the player's
+  ; this uses the trick (only for unsigned types!):
+  ; if ((num - lower) <= (upper - lower)) then in_range(num)
+.s_y1:
+  lda fuel_y  ; top left corner of fuel
+  sec 
+  sbc playerY ; subtract top left corner of player position
+  cmp #$10  ; check to see if the result is in the desired range of 16 px
+  bcs .s_y2 ; the carry will only be set if A >= 16, but A must be <= 16 in order for it to be in range
+  jmp .s_x1 ; if the number was in range, then we will check for an x-axis collision
+.s_y2:
+  lda fuel_y ; same procedure as before, except we check for fuel+8 instead of fuel
   clc 
-  adc #$10
-  cmp obj_y 
-  bcc .done 
-
-.collide: ; we execute this branch if we never have to go to .done
-  lda #%00111000
-  sta SQ1_ENV
-  lda #C2
-  asl A
-  tay 
-  lda note_table, y
-  sta SQ1_LOW
-  lda note_table+1, y 
-  sta SQ1_HIGH
+  adc #$08
+  sec 
+  sbc playerY ; note that the result should be <=, but currently it's only <...
+  cmp #$10    ; we will have to fix this issue later
+  bcs .done 
+.s_x1:
+  lda fuel_x  ; same procedure for x as for y
+  sec 
+  sbc playerX 
+  cmp #$10
+  bcs .s_x2
+  jmp .sprite_col 
+.s_x2:
+  lda fuel_x 
+  clc 
+  adc #$08
+  sec 
+  sbc playerX 
+  cmp #$10
+  bcs .done 
+.sprite_col:
+  lda #%00100000
+  sta $0212
 .done:
   ; if any of the conditions for a collision are NOT met, we go here
 
@@ -410,11 +406,26 @@ RandomGen:
   jsr gen_random
 .done:
 
+  jsr put_y
   JMP GameEngineDone  ; we are done with the game engine code, so let's go to that label
 
 ;;;;;     Our Subroutines   ;;;;;
 
 ;;; NT and Scroll Maintenance ;;;
+
+DrawRoutine:
+  lda draw_flag
+  bne DrawRoutineDone ; if the draw_flag is set, then don't do this
+
+  ; update our fuel position first
+  dec fuel_x
+  lda fuel_x
+  clc 
+  adc #$04
+  cmp #LEFTWALL
+  bcs NTSwapCheck
+  lda #%00100000
+  sta $0212
 
 NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
   lda scroll
@@ -440,6 +451,8 @@ NewColumnCheck: ; we must first check to see if it's time to draw a new column
   and #%00111111 ; only 128 columns of data, throw away top bit to wrap
   sta columnNumber 
 .done:
+
+DrawRoutineDone:
   rts
 
 ;;; Draw a new column to the background ;;;
@@ -484,29 +497,18 @@ DrawNewColumn:
   STA sourceHigh 
 
 DrawColumn:  
-  ;lda #%00000100 ; value will set PPU to +32 mode
-  ;sta $2000
-  ; this is new:
   lda #$1E
-  sta $0300 ; $a300
-  ; +32 mode allows us to jump down to the next byte in the column rather than the next byte in the row
-  ; OLD CODE:
-  ; lda $2002 ; reset the latch
-  ; lda columnHigh
-  ; sta $2006
-  ; lda columnLow
-  ; sta $2006
+  sta $0300
 
-  ; NEW CODE:
   lda columnHigh
-  sta $0301 ; a301
+  sta $0301
   lda columnLow
-  sta $0302 ; a302
+  sta $0302
 
   lda #%00000100
-  sta $0303 ; a303
+  sta $0303
 
-  ldx #$1E ; copy 30 bytes
+  ldx #$1E
   ldy #$00
 .loop:
   ; asteroid drawing code will go somewhere in here
@@ -516,6 +518,14 @@ DrawColumn:
   iny
   dex
   bne .loop
+.asteroid:
+  lda num_objects
+  beq .done
+  ldy asteroid_y
+  lda #$40 ; address of asteroid graphic
+  sta $0300, y ; store the value in A at our buffer plus the y value we generated
+  lda #$00
+  sta asteroid_y ; 0 our variables, just so we have a clean slate
 .done:
   inc draw_flag
   ; now we are done
@@ -523,7 +533,7 @@ DrawColumn:
 
 ;;; Update our sprite positions ;;;
 
-UpdateSprites: 
+UpdateSprites:
   LDA playerY
   STA $0200
   STA $0204
@@ -531,6 +541,11 @@ UpdateSprites:
   ADC #$08
   STA $0208
   STA $020C
+.fuel:
+  lda fuel_y
+  sta $0210
+  lda fuel_x
+  sta $0213
 .done:
   lda #$00
   sta sprite_draw_flag
@@ -554,7 +569,7 @@ ReadControllerLoop:
 
 ;;;;; Generate number of objects ;;;;;
 
-;; this PRNG uses a linear feedback shift register
+;; Okay so this PRNG is pretty shitty, but whatever, it will work for now
 
 gen_random:             ; generate the number of objects (asteroids/fuel) to be placed on the screen
   ldx frame_count_down  ; we will iterate 8 times
@@ -571,8 +586,6 @@ gen_random:             ; generate the number of objects (asteroids/fuel) to be 
   cmp #$0   ; reload flags
   rts 
 
-; Note: we must update put_y to reflect our next goal -- putting the asteroids in the *background*, not as sprites
-; this will allow us to have many more asteroids on the screen at one time
 put_y:      ; subroutine to put our random number in the asteroid's y position
   lda random_return
   cmp #TOPWALL
@@ -583,7 +596,7 @@ put_y:      ; subroutine to put our random number in the asteroid's y position
   bcc .done
   lda #BOTTOMWALL
 .done:
-  sta obj_y
+  sta asteroid_y
   rts 
 
 ;---------------------------------------------------
@@ -593,17 +606,18 @@ put_y:      ; subroutine to put our random number in the asteroid's y position
   .org $E000
 palette:
   .db $30,$00,$10,$0F,  $0F,$36,$17,$22,  $0F,$30,$21,$22,  $0F,$27,$17,$22   ;;background palette
-  .db $22,$1C,$15,$14,  $22,$02,$38,$3C,  $22,$1C,$15,$14,  $22,$02,$38,$3C   ;;sprite palette
+  .db $22,$1C,$15,$14,  $22,$02,$38,$3C,  $0C,$17,$28,$39,  $0F,$1C,$2B,$39   ;;sprite palette
 
 sprites:
-     ; player
-     ;vert tile attr horiz
-  .db $80, $00, $00, $10   ;sprite 0
-  .db $80, $01, $00, $18   ;sprite 1
-  .db $88, $02, $00, $10
-  .db $88, $03, $00, $18
-    ; asteroid
-  .db $80, $04, $00, $80
+      ;vert tile attr horiz
+      ;player
+  .db $80, $00, $02, $10   ;sprite 0
+  .db $80, $01, $02, $18   ;sprite 1
+  .db $88, $02, $02, $10
+  .db $88, $03, $02, $18
+      ; fuel
+  .db $00, $04, $03, $00
+      
 
 columnData:
   .incbin "bkg.bin"

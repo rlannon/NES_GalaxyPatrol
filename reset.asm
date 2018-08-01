@@ -69,8 +69,11 @@ PlayerVariablesInit:
   sta frame_count_up
   sta random_return
 
-  sta obj_y
-  sta obj_x
+  sta asteroid_y
+  
+  lda #$60
+  sta fuel_x
+  sta fuel_y
 
   jsr sound_engine_init ; initialize the sound engine
 
@@ -94,7 +97,7 @@ LoadSpritesLoop:
   LDA sprites, X
   STA $0200, X
   INX
-  CPX #$10
+  CPX #$14
   BNE LoadSpritesLoop
 
 InitializeNametables: ; initialize our nametables with our starting background
