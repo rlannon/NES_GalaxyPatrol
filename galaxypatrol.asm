@@ -26,6 +26,11 @@ columnNumber        .rs 1
 sourceLow           .rs 1
 sourceHigh          .rs 1
 
+buff_ptr = $fe
+buff_ptr_2 = $ff
+buff_data_p = $fc
+buff_data_p2 = $fd
+
 playerX	          	.rs 1
 playerY	           	.rs 1
 speedy	          	.rs 1 ; player's speed in the y direction
@@ -68,6 +73,8 @@ BUTTON_DOWN = %00000100
 BUTTON_LEFT = %00000010
 BUTTON_RIGHT = %00000001
 
+; Our memory buffer is located between $0400 and $07FF
+
 ;---------------------------------------------------
 ;; Our first 8kb bank. Include the sound engine here
   .bank 0
@@ -106,7 +113,6 @@ main_loop:
   jsr GameEngine
 
   inc sleep_flag
-  inc scroll
 
   jsr DrawRoutine
 
@@ -124,24 +130,30 @@ NMI:      ; This interrupt routine will be called every time VBlank begins
   tya
   pha
 
-  ; inc scroll ; moved to game logic
-
-  ; NT Swap Checks used to be here...
+  inc scroll
 
   lda draw_flag
   beq BufferTransferDone
   ; this gets executed in the event that draw_flag is set
-  lda $2002
-  lda $0301
-  sta $2006
-  lda $0302
-  sta $2006
-  lda $0303
-  sta $2000
-  ldx $0300
+
   ldy #$00
+  lda [buff_ptr], y ; $0400 - number of bytes
+  tax ; now X should be equal to 1E
+  cpx #$00
+  beq BufferTransferDone ; if x is 0, abort drawing because there is no new data in the buffer
+  iny
+  lda $2002
+  lda [buff_ptr], y ; $0401 - contains columnHigh
+  sta $2006
+  iny
+  lda [buff_ptr], y ; $0402 - contains columnLow
+  sta $2006
+  iny 
+  lda [buff_ptr], y ; $0403 - should be our +32 mode
+  sta $2000
+  iny
 BufferTransferLoop:
-  lda $0304, y
+  lda [buff_ptr], y ; $0404 - x
   sta $2007
   iny
   dex
@@ -158,6 +170,7 @@ BufferTransferDone:
   ;jsr sound_play_frame  ; play sound
 
   ; Clear PPU address register
+  lda $2002
   LDA #$00
   STA $2006
   STA $2006
@@ -195,6 +208,10 @@ BufferTransferDone:
 
 IRQ:      ; we aren't using IRQ, at least for now
   RTI 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;      GAME LOGIC     ;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 GameEngine:
   LDA gamestate
@@ -363,28 +380,28 @@ CheckCollision:
   ; the reason we would want the whole field of view in the buffer is for checking this...
   ; because it's currently not all stored in the buffer, we need to get the data during vblank...
 .sprite_chk:  ; check for sprite collision by checking the fuel's edges against the player's
-  ; this uses the trick (only for unsigned types!):
+  ; this uses the following formula; all numbers must be unsigned:
   ; if ((num - lower) <= (upper - lower)) then in_range(num)
 .s_y1:
   lda fuel_y  ; top left corner of fuel
   sec 
   sbc playerY ; subtract top left corner of player position
-  cmp #$10  ; check to see if the result is in the desired range of 16 px
-  bcs .s_y2 ; the carry will only be set if A >= 16, but A must be <= 16 in order for it to be in range
+  cmp #$11  ; check to see if the result is in the desired range of 16 px
+  bcs .s_y2 ; the carry will only be set if A >= 17, but A must be <= 16 in order for it to be in range
   jmp .s_x1 ; if the number was in range, then we will check for an x-axis collision
-.s_y2:
+.s_y2:  ; if number was not in range, check the other end of the fuel sprite
   lda fuel_y ; same procedure as before, except we check for fuel+8 instead of fuel
   clc 
   adc #$08
   sec 
-  sbc playerY ; note that the result should be <=, but currently it's only <...
-  cmp #$10    ; we will have to fix this issue later
+  sbc playerY
+  cmp #$11  ; note how it must be <= 16...so we just compare to 17, and we get the correct result
   bcs .done 
 .s_x1:
   lda fuel_x  ; same procedure for x as for y
   sec 
   sbc playerX 
-  cmp #$10
+  cmp #$11
   bcs .s_x2
   jmp .sprite_col 
 .s_x2:
@@ -393,7 +410,7 @@ CheckCollision:
   adc #$08
   sec 
   sbc playerX 
-  cmp #$10
+  cmp #$11
   bcs .done 
 .sprite_col:
   lda #%00100000
@@ -411,11 +428,11 @@ RandomGen:
 
 ;;;;;     Our Subroutines   ;;;;;
 
-;;; NT and Scroll Maintenance ;;;
+;;; Draw Routine ;;;
 
 DrawRoutine:
   lda draw_flag
-  bne DrawRoutineDone ; if the draw_flag is set, then don't do this
+  bne DrawRoutineDone ; if the draw_flag is set, then don't do this - only once per frame!
 
   ; update our fuel position first
   dec fuel_x
@@ -423,7 +440,8 @@ DrawRoutine:
   clc 
   adc #$04
   cmp #LEFTWALL
-  bcs NTSwapCheck
+  bcs NTSwapCheck ; continue if the fuel hasn't hit the wall yet
+  ; if it has hit the wall, hide it behind the background
   lda #%00100000
   sta $0212
 
@@ -442,13 +460,14 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
 NewColumnCheck: ; we must first check to see if it's time to draw a new column
   lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide
   and #%00000111  ; see if divisible by 8
-  bne .done ; if it is not time, we are done
+  bne DrawRoutineDone ; if it is not time, we are done
+  ; else, execute this
   jsr DrawNewColumn
 
   lda columnNumber
   clc
   adc #$01
-  and #%00111111 ; only 128 columns of data, throw away top bit to wrap
+  and #%00111111 ; only 64 columns of data, throw away top bits to wrap
   sta columnNumber 
 .done:
 
@@ -498,37 +517,46 @@ DrawNewColumn:
 
 DrawColumn:  
   lda #$1E
-  sta $0300
+  ldy #$00
+  sta [buff_ptr], y ; $0400
 
+  iny
   lda columnHigh
-  sta $0301
+  sta [buff_ptr], Y ; $0401
+  iny 
   lda columnLow
-  sta $0302
+  sta [buff_ptr], y ; $0402
 
+  iny
   lda #%00000100
-  sta $0303
-
+  sta [buff_ptr], Y ; $0403
   ldx #$1E
+  
+  ; use buff_data_p to track in the loop
+  lda buff_ptr 
+  clc 
+  adc #$04
+  sta buff_data_p
+  lda buff_ptr_2
+  sta buff_data_p2
+
   ldy #$00
 .loop:
-  ; asteroid drawing code will go somewhere in here
-  ; it must overwrite the byte for its y address
-  lda [sourceLow], y
-  sta $0304, y ; a304 + y
+  lda [sourceLow], y ; this originally started with y at 0, but now it's 4...
+  sta [buff_data_p], y ; $0400 + y, which starts at 4
   iny
   dex
   bne .loop
 .asteroid:
   lda num_objects
   beq .done
+
   ldy asteroid_y
   lda #$40 ; address of asteroid graphic
-  sta $0300, y ; store the value in A at our buffer plus the y value we generated
-  lda #$00
-  sta asteroid_y ; 0 our variables, just so we have a clean slate
+  sta [buff_data_p], y ; store the value in A at our buffer plus the y value we generated
 .done:
+  ; set the draw flag to ensure we only update graphics once per frame, then return
   inc draw_flag
-  ; now we are done
   rts
 
 ;;; Update our sprite positions ;;;
@@ -588,13 +616,17 @@ gen_random:             ; generate the number of objects (asteroids/fuel) to be 
 
 put_y:      ; subroutine to put our random number in the asteroid's y position
   lda random_return
-  cmp #TOPWALL
-  bcs .continue
-  lda #TOPWALL
-.continue:
-  cmp #BOTTOMWALL
-  bcc .done
-  lda #BOTTOMWALL
+  ; make sure the y value is between 4 and 34 ($04 and $22) - it has to fit in the buffer column
+  sec 
+  sbc #$04
+  cmp #$23
+  bcc .done ; carry will be clear if it is less than $23, so less than or equal to $22
+.adjust:  ; if it is higher than $22, subtract $22 to attempt to bring it in range
+  lda random_return
+  sec 
+  sbc #$22
+  sta random_return
+  jmp put_y ; check again
 .done:
   sta asteroid_y
   rts 

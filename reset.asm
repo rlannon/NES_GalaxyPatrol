@@ -60,6 +60,7 @@ PlayerVariablesInit:
   sta nametable
   sta sourceLow
   sta sourceHigh
+  sta columnNumber
   
   sta sleep_flag
   sta draw_flag
@@ -76,6 +77,12 @@ PlayerVariablesInit:
   sta fuel_y
 
   jsr sound_engine_init ; initialize the sound engine
+
+  ; before we draw columns, we must initialize our buffer pointer to $0400
+  lda #$00
+  sta buff_ptr
+  lda #$04
+  sta buff_ptr_2
 
 LoadPalettes:
   LDA $2002
