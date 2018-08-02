@@ -28,8 +28,8 @@ sourceHigh          .rs 1
 
 buff_ptr = $fe
 buff_ptr_2 = $ff
-buff_data_p = $fc
-buff_data_p2 = $fd
+buff_data_p = $fc ; this is only used when writing to the graphics buffer
+buff_data_p2 = $fd ; it allows us to load the correct value from the data source but store it to the correct address
 
 playerX	          	.rs 1
 playerY	           	.rs 1
@@ -105,9 +105,7 @@ main_loop:
   ; our main game loop
 .loop:
   lda sleep_flag
-  bne .loop 
-
-  ; jsr gen_random ; already exists in game engine, comment out for now
+  bne .loop
 
   jsr ReadController
   jsr GameEngine
@@ -131,6 +129,18 @@ NMI:      ; This interrupt routine will be called every time VBlank begins
   pha
 
   inc scroll
+
+NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
+  lda scroll
+  bne NTSwapCheckDone
+
+NTSwap:           ; if we have scrolled all the way to the second, display second nametable
+  lda nametable ; 0 or 1
+  eor #$01
+  sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
+  ; basically, if we are at 0, we switch to 1, and if we are at 1, we switch to 0
+
+NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
 
   lda draw_flag
   beq BufferTransferDone
@@ -440,22 +450,12 @@ DrawRoutine:
   clc 
   adc #$04
   cmp #LEFTWALL
-  bcs NTSwapCheck ; continue if the fuel hasn't hit the wall yet
+  bcs NewColumnCheck ; continue if the fuel hasn't hit the wall yet
   ; if it has hit the wall, hide it behind the background
   lda #%00100000
   sta $0212
 
-NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
-  lda scroll
-  bne NTSwapCheckDone
-
-NTSwap:           ; if we have scrolled all the way to the second, display second nametable
-  lda nametable ; 0 or 1
-  eor #$01
-  sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
-  ; basically, if we are at 0, we switch to 1, and if we are at 1, we switch to 0
-
-NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
+  ; our nametable swap check was here, but that causes flickering; now it is in NMI with the scroll variable
 
 NewColumnCheck: ; we must first check to see if it's time to draw a new column
   lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide

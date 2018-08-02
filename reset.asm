@@ -120,18 +120,67 @@ InitializeNametables: ; initialize our nametables with our starting background
   adc #$08 
   sta scroll  ; add 8 to scroll
   inc columnNumber  ; increment the column number by 1
-  lda columnNumber  ; load column number
+
+  ; store in nametable since NMI is disabled
+  ldy #$00
+  lda [buff_ptr], y
+  tax ; x now has number of cols
+  iny 
+  lda $2002
+  lda [buff_ptr], y ; high byte of column addr
+  sta $2006
+  iny 
+  lda [buff_ptr], y ; low byte of column addr
+  sta $2006
+  iny
+  lda [buff_ptr], y ; PPU +32 mode
+  sta $2000
+  iny
+.transfer:  ; transfer data from buffer to PPU
+  lda [buff_ptr], y
+  sta $2007
+  iny
+  dex
+  bne .transfer
+.transferdone:
+  lda #$00
+  sta draw_flag
+  
+  ; check to see how many columns we have written
+  lda columnNumber
   cmp #$20 
   bne .loop ; loop 32 times
 
   lda #$00
-  sta nametable
-  sta scroll 
+  sta nametable ; go to next nametable
+  sta scroll ; set scroll pos to zero
   jsr DrawNewColumn ; draw first column of second nametable
   inc columnNumber
-
-  lda #$00  ; set PPU back to increment +1 mode
+  ; now, transfer buffer data to PPU for second nametable
+  ldy #$00
+  lda [buff_ptr], y 
+  tax 
+  iny 
+  lda $2002
+  lda [buff_ptr], y
+  sta $2006
+  iny 
+  lda [buff_ptr], y 
+  sta $2006
+  iny 
+  lda [buff_ptr], y 
   sta $2000
+  iny 
+.nt2_transfer:
+  lda [buff_ptr], y 
+  sta $2007
+  iny 
+  dex 
+  bne .nt2_transfer
+
+  lda #$00
+  sta $2000  ; set PPU back to increment +1 mode
+  sta draw_flag ; clear the draw flag
 .done:
 
   ; now, fill our attribute tables
