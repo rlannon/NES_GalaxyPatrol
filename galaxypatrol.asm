@@ -146,24 +146,21 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   beq BufferTransferDone
   ; this gets executed in the event that draw_flag is set
 
+  lda #%00000100
+  sta $2000
+
   ldy #$00
-  lda [buff_ptr], y ; $0400 - number of bytes
-  tax ; now X should be equal to 1E
-  cpx #$00
-  beq BufferTransferDone ; if x is 0, abort drawing because there is no new data in the buffer
-  iny
   lda $2002
-  lda [buff_ptr], y ; $0401 - contains columnHigh
+  lda [buff_ptr], y ; $00 - contains columnHigh
   sta $2006
   iny
-  lda [buff_ptr], y ; $0402 - contains columnLow
+  lda [buff_ptr], y ; $01 - contains columnLow
   sta $2006
   iny 
-  lda [buff_ptr], y ; $0403 - should be our +32 mode
-  sta $2000
-  iny
+
+  ldx #$1e
 BufferTransferLoop:
-  lda [buff_ptr], y ; $0404 - x
+  lda [buff_ptr], y ; $02 - x
   sta $2007
   iny
   dex
@@ -172,7 +169,6 @@ BufferTransferDone:
   LDA #$00
   sta draw_flag   ; clear the draw flag
   STA $2000       ; put PPU back to +1 mode
-
   STA $2003       ; Write zero to the OAM register because we want to use DMA
   LDA #$02
   STA $4014       ; Write to OAM using DMA -- copies bytes at $0200 to OAM
@@ -461,8 +457,9 @@ NewColumnCheck: ; we must first check to see if it's time to draw a new column
   lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide
   and #%00000111  ; see if divisible by 8
   bne DrawRoutineDone ; if it is not time, we are done
-  ; else, execute this
-  jsr DrawNewColumn
+  ; else:
+  jsr IncPtr
+  jsr DrawNewColumn ; draw column
 
   lda columnNumber
   clc
@@ -472,6 +469,7 @@ NewColumnCheck: ; we must first check to see if it's time to draw a new column
 .done:
 
 DrawRoutineDone:
+  inc draw_flag ; increment, even if it's already nonzero
   rts
 
 ;;; Draw a new column to the background ;;;
@@ -515,35 +513,48 @@ DrawNewColumn:
   ADC #HIGH(columnData)
   STA sourceHigh 
 
+  ;jsr IncPtr
 DrawColumn:  
-  lda #$1E
   ldy #$00
-  sta [buff_ptr], y ; $0400
-
-  iny
   lda columnHigh
-  sta [buff_ptr], Y ; $0401
+  sta [buff_ptr], Y ; $00
   iny 
   lda columnLow
-  sta [buff_ptr], y ; $0402
-
+  sta [buff_ptr], y ; $01
   iny
-  lda #%00000100
-  sta [buff_ptr], Y ; $0403
+
   ldx #$1E
-  
   ; use buff_data_p to track in the loop
   lda buff_ptr 
-  clc 
-  adc #$04
   sta buff_data_p
   lda buff_ptr_2
   sta buff_data_p2
 
+  lda buff_data_p 
+  clc 
+  adc #$02
+  sta buff_data_p
+  bcs .inc_p2 
+  jmp .inc_done 
+.inc_p2:
+  lda buff_data_p2
+  cmp #$07
+  beq .rs_p2
+  inc buff_data_p2
+  jmp .inc_done 
+.rs_p2:
+  lda #$03
+  sta buff_data_p2
+  lda buff_data_p
+  clc 
+  adc #$e0 
+  sta buff_data_p
+.inc_done:
+
   ldy #$00
 .loop:
-  lda [sourceLow], y ; this originally started with y at 0, but now it's 4...
-  sta [buff_data_p], y ; $0400 + y, which starts at 4
+  lda [sourceLow], y
+  sta [buff_data_p], y ; buff_ptr + #$04 + y
   iny
   dex
   bne .loop
@@ -552,11 +563,9 @@ DrawColumn:
   beq .done
 
   ldy asteroid_y
-  lda #$40 ; address of asteroid graphic
+  lda #$40 ; asteroid graphic
   sta [buff_data_p], y ; store the value in A at our buffer plus the y value we generated
 .done:
-  ; set the draw flag to ensure we only update graphics once per frame, then return
-  inc draw_flag
   rts
 
 ;;; Update our sprite positions ;;;
@@ -594,6 +603,31 @@ ReadControllerLoop:
   DEX		; we could start x at 0 and then compare x to 8, but that requires 1 extra instruction
   BNE ReadControllerLoop
   RTS
+
+;;;;;     Increment buff_ptr     ;;;;;
+
+IncPtr: 
+  lda buff_ptr 
+  clc 
+  adc #$20 ; increment by 32, the number of bytes it takes per column
+  sta buff_ptr 
+  bcs .carry ; if the carry flag it set then we have overflowed, so we need to increment the high byte
+  jmp .done ; else, we are done
+.carry:
+  lda buff_ptr_2
+  cmp #$07
+  beq .reset_high_byte
+  inc buff_ptr_2  ; if we are currently not in page $07, then we are ok
+  jmp .done 
+.reset_high_byte: ; execute this if we are in page $07 and need to go back to the beginning of the buffer
+  lda #$03
+  sta buff_ptr_2
+  lda buff_ptr 
+  clc 
+  adc #$e0 
+  sta buff_ptr
+.done:
+  rts 
 
 ;;;;; Generate number of objects ;;;;;
 

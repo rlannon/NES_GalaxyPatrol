@@ -79,9 +79,9 @@ PlayerVariablesInit:
   jsr sound_engine_init ; initialize the sound engine
 
   ; before we draw columns, we must initialize our buffer pointer to $0400
-  lda #$00
+  lda #$c0
   sta buff_ptr
-  lda #$04
+  lda #$03
   sta buff_ptr_2
 
 LoadPalettes:
@@ -113,7 +113,11 @@ InitializeNametables: ; initialize our nametables with our starting background
   lda #$00
   sta scroll
   sta columnNumber
+
+  lda #%00000100
+  sta $2000
 .loop:
+  jsr IncPtr
   jsr DrawNewColumn ; draw bg column
   lda scroll ; get column
   clc 
@@ -123,18 +127,14 @@ InitializeNametables: ; initialize our nametables with our starting background
 
   ; store in nametable since NMI is disabled
   ldy #$00
-  lda [buff_ptr], y
-  tax ; x now has number of cols
-  iny 
+  ldx #$1e
+
   lda $2002
   lda [buff_ptr], y ; high byte of column addr
   sta $2006
   iny 
   lda [buff_ptr], y ; low byte of column addr
   sta $2006
-  iny
-  lda [buff_ptr], y ; PPU +32 mode
-  sta $2000
   iny
 .transfer:  ; transfer data from buffer to PPU
   lda [buff_ptr], y
@@ -154,23 +154,27 @@ InitializeNametables: ; initialize our nametables with our starting background
   lda #$00
   sta nametable ; go to next nametable
   sta scroll ; set scroll pos to zero
+
+  jsr IncPtr
   jsr DrawNewColumn ; draw first column of second nametable
-  inc columnNumber
+
+  inc columnNumber  ; update column number and scroll position
+  lda scroll
+  clc 
+  adc #$08
+  sta scroll 
+
   ; now, transfer buffer data to PPU for second nametable
   ldy #$00
-  lda [buff_ptr], y 
-  tax 
-  iny 
+  ldx #$1e
+
   lda $2002
   lda [buff_ptr], y
   sta $2006
   iny 
   lda [buff_ptr], y 
   sta $2006
-  iny 
-  lda [buff_ptr], y 
-  sta $2000
-  iny 
+  iny  
 .nt2_transfer:
   lda [buff_ptr], y 
   sta $2007
