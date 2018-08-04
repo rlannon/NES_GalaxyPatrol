@@ -72,17 +72,27 @@ PlayerVariablesInit:
 
   sta asteroid_y
   
+  sta col
+
+  sta bkg_collision
+  
   lda #$60
   sta fuel_x
   sta fuel_y
 
   jsr sound_engine_init ; initialize the sound engine
 
-  ; before we draw columns, we must initialize our buffer pointer to $0400
+  ; before we draw columns, we must initialize our buffer pointer
+  ; we start at $03c0 so when we increment it before drawing, it's at the correct address
   lda #$c0
   sta buff_ptr
   lda #$03
-  sta buff_ptr_2
+  sta buff_ptr_high
+
+  lda #$20
+  sta playerX_ptr_low
+  lda #$04
+  sta playerX_ptr_high
 
 LoadPalettes:
   LDA $2002

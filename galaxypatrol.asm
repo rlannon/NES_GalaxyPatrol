@@ -27,9 +27,13 @@ sourceLow           .rs 1
 sourceHigh          .rs 1
 
 buff_ptr = $fe
-buff_ptr_2 = $ff
-buff_data_p = $fc ; this is only used when writing to the graphics buffer
-buff_data_p2 = $fd ; it allows us to load the correct value from the data source but store it to the correct address
+buff_ptr_high = $ff
+playerX_ptr_low = $fc
+playerX_ptr_high = $fd
+col = $fb
+temp_ptr_low = $f9
+temp_ptr_high = $fa
+bkg_collision = $f0
 
 playerX	          	.rs 1
 playerY	           	.rs 1
@@ -383,8 +387,56 @@ CheckCollision:
   ; 2) check for a collision with a sprite
   ; This will determine how we resolve the collision
 .bkg_chk: ; check for background collision by reading the background value around the player
-  ; the reason we would want the whole field of view in the buffer is for checking this...
-  ; because it's currently not all stored in the buffer, we need to get the data during vblank...
+  ; we now have a pointer, stored in 2 bytes as playerX_ptr_low and playerX_ptr_high
+  ; this can track our player's posiiton in the buffer
+  lda playerY
+  lsr a
+  lsr a
+  lsr a ; divide by 8
+  clc 
+  adc #$02 ; add two to skip the bytes from our PPU address in buffer
+  tay ; store in y as pointer index
+  lda [playerX_ptr_low], y ; load our X pointer indexed with tile number
+  cmp #$40  ; check to see if it's the asteroid sprite tile
+  beq .bkg_collide
+  ; let's check the next sprite down
+  iny 
+  lda [playerX_ptr_low], y 
+  cmp #$40
+  beq .bkg_collide
+  ; now let's check the sprites in the next column over
+  lda playerX_ptr_low
+  clc 
+  adc #$20
+  sta temp_ptr_low ; using temp_ptrs, increment by one column
+  lda playerX_ptr_high
+  cmp #$07
+  beq .bkg_temp_reset
+  sta temp_ptr_high
+  inc temp_ptr_high
+  jmp .bkg_continue
+.bkg_temp_reset:
+  lda #$03
+  sta temp_ptr_high
+  lda temp_ptr_low
+  clc 
+  adc #$e0 
+  sta temp_ptr_low
+.bkg_continue:
+  dey ; since we incremented, decrement before checking next tile
+  lda [temp_ptr_low], y ; temp_ptrs have our address for the next column
+  cmp #$40
+  beq .bkg_collide
+  ; and see if it's the next one
+  iny 
+  lda [temp_ptr_low], y 
+  cmp #$40
+  beq .bkg_collide
+  ; if none of them have an asteroid, check the sprites
+  jmp .sprite_chk
+.bkg_collide:
+  ; execute this branch if we have an asteroid collision
+  inc bkg_collision
 .sprite_chk:  ; check for sprite collision by checking the fuel's edges against the player's
   ; this uses the following formula; all numbers must be unsigned:
   ; if ((num - lower) <= (upper - lower)) then in_range(num)
@@ -466,6 +518,13 @@ NewColumnCheck: ; we must first check to see if it's time to draw a new column
   adc #$01
   and #%00111111 ; only 64 columns of data, throw away top bits to wrap
   sta columnNumber 
+  inc col
+  lda col
+  cmp #$22
+  bne .done
+  ; execute this only if we need to update our playerX column
+  lda #$00
+  sta col 
 .done:
 
 DrawRoutineDone:
@@ -526,35 +585,14 @@ DrawColumn:
   ldx #$1E
   ; use buff_data_p to track in the loop
   lda buff_ptr 
-  sta buff_data_p
-  lda buff_ptr_2
-  sta buff_data_p2
-
-  lda buff_data_p 
-  clc 
+  clc
   adc #$02
-  sta buff_data_p
-  bcs .inc_p2 
-  jmp .inc_done 
-.inc_p2:
-  lda buff_data_p2
-  cmp #$07
-  beq .rs_p2
-  inc buff_data_p2
-  jmp .inc_done 
-.rs_p2:
-  lda #$03
-  sta buff_data_p2
-  lda buff_data_p
-  clc 
-  adc #$e0 
-  sta buff_data_p
-.inc_done:
+  sta buff_ptr
 
   ldy #$00
 .loop:
   lda [sourceLow], y
-  sta [buff_data_p], y ; buff_ptr + #$04 + y
+  sta [buff_ptr], y ; buff_ptr + #$04 + y
   iny
   dex
   bne .loop
@@ -564,8 +602,12 @@ DrawColumn:
 
   ldy asteroid_y
   lda #$40 ; asteroid graphic
-  sta [buff_data_p], y ; store the value in A at our buffer plus the y value we generated
+  sta [buff_ptr], y ; store the value in A at our buffer plus the y value we generated
 .done:
+  lda buff_ptr 
+  sec 
+  sbc #$02
+  sta buff_ptr 
   rts
 
 ;;; Update our sprite positions ;;;
@@ -614,19 +656,40 @@ IncPtr:
   bcs .carry ; if the carry flag it set then we have overflowed, so we need to increment the high byte
   jmp .done ; else, we are done
 .carry:
-  lda buff_ptr_2
+  lda buff_ptr_high
   cmp #$07
   beq .reset_high_byte
-  inc buff_ptr_2  ; if we are currently not in page $07, then we are ok
+  inc buff_ptr_high  ; if we are currently not in page $07, then we are ok
   jmp .done 
 .reset_high_byte: ; execute this if we are in page $07 and need to go back to the beginning of the buffer
   lda #$03
-  sta buff_ptr_2
+  sta buff_ptr_high
   lda buff_ptr 
   clc 
   adc #$e0 
   sta buff_ptr
 .done:
+
+.player:
+  lda playerX_ptr_low 
+  clc 
+  adc #$20
+  sta playerX_ptr_low
+  bcc .rts 
+  ; gets executed if C is set
+  lda playerX_ptr_high 
+  cmp #$07 
+  beq .player_reset 
+  inc playerX_ptr_high
+  jmp .rts 
+.player_reset:
+  lda #$03
+  sta playerX_ptr_high
+  lda playerX_ptr_low
+  clc 
+  adc #$e0 
+  sta playerX_ptr_low
+.rts:
   rts 
 
 ;;;;; Generate number of objects ;;;;;
