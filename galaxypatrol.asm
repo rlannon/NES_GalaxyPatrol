@@ -396,7 +396,6 @@ CheckCollision:
   ; We do two things in this routine -- 
   ; 1) check for a collision against a background object;
   ; 2) check for a collision with a sprite
-  ; This will determine how we resolve the collision
 .get_tile: ; check for background collision by reading the background value around the player
   ; we must get the tile number of the sprite on the screen
   ; first, we must divide playerX and playerY by the width and height of the sprite, respectively
@@ -447,15 +446,27 @@ CheckCollision:
   lda temp_ptr_high 
   clc 
   adc buf_tile_high
-  bcs .return_to_buffer_org
-  jmp .bkg_chk
-.return_to_buffer_org:
-  ; this is only to be run if we skip past the end of the buffer and must return...
 .bkg_chk:
   ldy #$02  ; use y = 2 to skip our PPU address because we haven't done it yet
+  ; note we will use the y index to check whether we encounter collisions by checking y=2, y=3, y=34, and y=35
   lda [temp_ptr_low], y
   cmp #$40
-  bne .sprite_chk
+  beq .bkg_collide  ; we can stop checking if there is a single collision anywhere on the sprite
+  iny
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide
+  ldy #$22
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide
+  iny 
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide
+  ; if no collisions were triggered, go to .sprite_chk
+  jmp .sprite_chk
+  ; note: the above doesn't always seem to notice collisions on lower half of player...fix?
 .bkg_collide:
   ; execute this branch if we have an asteroid collision
   inc bkg_collision
@@ -492,7 +503,7 @@ CheckCollision:
   sbc playerX 
   cmp #$11
   bcs .done 
-.sprite_col:
+.sprite_col:  ; since we only have one fuel right now, this works, but this might need to be changed later
   lda #%00100000
   sta $0212
 .done:
