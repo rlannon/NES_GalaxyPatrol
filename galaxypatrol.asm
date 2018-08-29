@@ -15,16 +15,55 @@
 
 gamestate         	.rs 1	; .rs 1 means reserve 1 byte of space
 buttons	          	.rs 1
-playerX	          	.rs 1
-playerY	           	.rs 1
 score           		.rs 1
-speedy	          	.rs 1 ; player's speed in the y direction
-speedx		          .rs 1 ; object's speed in the x direction
+
 scroll              .rs 1
 nametable           .rs 1
-collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel
+
+columnLow           .rs 1 ; low byte of column address
+columnHigh          .rs 1 ; high byte of column address
+columnNumber        .rs 1
+sourceLow           .rs 1
+sourceHigh          .rs 1
+
+;;;;; Some Pointers ;;;;;
+
+buff_ptr = $fe  ; these pointers are for the column to draw next
+buff_ptr_high = $ff
+
+start_ptr_low = $f3  ; these pointers are for the address of the current first column on screen
+start_ptr_high = $f4
+
+playerX_ptr_low = $fc
+playerX_ptr_high = $fd
+
+temp_ptr_low = $f9
+temp_ptr_high = $fa
+
+buf_tile_low = $f1
+buf_tile_high = $f2
+
+col = $fb
+bkg_collision = $f0
+
+playerX	          	.rs 1
+playerY	           	.rs 1
+speedy	          	.rs 1 ; player's speed in the y direction
+speedx		          .rs 1 ; object's speed in the x direction
+asteroid_y          .rs 1 ; used to count the asteroid's y position
+fuel_x              .rs 1 ; used to track the fuel object (limit per nametable?)
+fuel_y              .rs 1
+num_objects         .rs 1 ; used to count the number of objects to be generated
+
+collide_flag        .rs 1 ; 1 = asteroid; 2 = fuel ?
 sleep_flag          .rs 1
 draw_flag           .rs 1
+sprite_draw_flag    .rs 1 ; used in the game engine to determine whether we should update sprite positions
+
+frame_count_down    .rs 2 ; used to count the number of frames passed since last pressed up/down
+frame_count_up      .rs 2
+
+random_return       .rs 1
 
 ;---------------------------------------------------
 ;; Constants
@@ -33,8 +72,23 @@ STATEPLAYING	= $01	; playing the game; draw graphics, check paddles, etc.
 STATEGAMEOVER	= $02	; game over sequence
 STATEPAUSE  = $03 ; we are in pause
 
+; define our window limits
 TOPWALL = $0A
 BOTTOMWALL = $D8
+LEFTWALL = $04
+RIGHTWALL = $F4
+
+; constants for button presses so we don't have to write out binary every time
+BUTTON_A = %10000000
+BUTTON_B = %01000000
+BUTTON_SELECT = %00100000
+BUTTON_START = %00010000
+BUTTON_UP = %00001000
+BUTTON_DOWN = %00000100
+BUTTON_LEFT = %00000010
+BUTTON_RIGHT = %00000001
+
+; Our memory buffer is located between $0400 and $07FF
 
 ;---------------------------------------------------
 ;; Our first 8kb bank. Include the sound engine here
@@ -56,14 +110,25 @@ BOTTOMWALL = $D8
 
   .include "reset.asm"
 
-  jsr reset ; put this in a separate file for code that is easier to read
+  ; RESET goes here -- points to $C000
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;  Main Game Loop  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-main_loop:
-  ; code here does not execute. Figure this out later.
+main_loop: 
+  ; our main game loop
+.loop:
+  lda sleep_flag
+  bne .loop
+
+  jsr ReadController
+  jsr GameEngine
+
+  inc sleep_flag
+
+  jsr DrawRoutine
+
   jmp main_loop 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -78,19 +143,47 @@ NMI:      ; This interrupt routine will be called every time VBlank begins
   tya
   pha
 
-  INC scroll
-  
+  inc scroll
+
 NTSwapCheck:      ; checks to see if we have scrolled all the way to the second nametable
   lda scroll
   bne NTSwapCheckDone
 
-NTSwap:           ; if we have scrolled all the way to the second, display the second, not first
+NTSwap:           ; if we have scrolled all the way to the second, display second nametable
   lda nametable ; 0 or 1
   eor #$01
-  sta nametable
+  sta nametable    ; without this, background will immediately revert to the first nametable upon scrolling all the way across
+  ; basically, if we are at 0, we switch to 1, and if we are at 1, we switch to 0
 
 NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphics
+
+  lda draw_flag
+  beq BufferTransferDone
+  ; this gets executed in the event that draw_flag is set
+
+  lda #%00000100
+  sta $2000
+
+  ldy #$00
+  lda $2002
+  lda [buff_ptr], y ; $00 - contains columnHigh
+  sta $2006
+  iny
+  lda [buff_ptr], y ; $01 - contains columnLow
+  sta $2006
+  iny 
+
+  ldx #$1e
+BufferTransferLoop:
+  lda [buff_ptr], y ; $02 - x
+  sta $2007
+  iny
+  dex
+  bne BufferTransferLoop
+BufferTransferDone:
   LDA #$00
+  sta draw_flag   ; clear the draw flag
+  STA $2000       ; put PPU back to +1 mode
   STA $2003       ; Write zero to the OAM register because we want to use DMA
   LDA #$02
   STA $4014       ; Write to OAM using DMA -- copies bytes at $0200 to OAM
@@ -98,15 +191,19 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   ;jsr sound_play_frame  ; play sound
 
   ; Clear PPU address register
+  lda $2002
   LDA #$00
   STA $2006
   STA $2006
 
   ; scroll the screen
+  lda $2002   ; reading PPUSTATUS resets the address latch
+
   lda scroll
-  sta $2005
+  sta $2005   ; $2005 is the PPUSCROLL register; high byte is X scroll
+
   lda #$00
-  sta $2005
+  sta $2005   ; low byte is Y scroll
 
   ;; PPU clean-up; ensure rendering the next frame starts properly.
   LDA #%10010000   ; enable NMI, sprites from Pattern Table 0, background from Pattern Table 1
@@ -115,11 +212,11 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
   LDA #%00011110   ; enable sprites, enable background, no clipping on left side
   STA $2001
 
-  jsr ReadController
-  jsr GameEngine
-
   lda #$00
   sta sleep_flag
+
+  inc frame_count_down  ; increment the number of frames that have occurred since last button press
+  inc frame_count_up
 
   pla
   tay
@@ -132,6 +229,10 @@ NTSwapCheckDone:  ; done with our scroll logic, time to actually draw the graphi
 
 IRQ:      ; we aren't using IRQ, at least for now
   RTI 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;      GAME LOGIC     ;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 GameEngine:
   LDA gamestate
@@ -161,119 +262,386 @@ EngineTitle:  ; what do we do on the title screen?
 EngineGameOver:
   JMP GameEngineDone
 
-EnginePause
-  JMP EnginePauseDone
-EnginePauseDone:
+EnginePause:          ; create a "pause" screen here
+  ;; This causes all sorts of weird shit to happen
+
+  jsr ReadController  ; get controller input
+
+  lda buttons
+  and #BUTTON_START   ; if the user presses "START", then go back to playing
+  beq .done
+
+  lda #STATEPLAYING 
+  sta gamestate
+.done:
+  jmp GameEngineDone
 
 EnginePlaying:
   ; First, we check to see if we need to handle controllers
 
+PressA:
+  lda buttons
+  and #BUTTON_A 
+  beq .done
+
+  lda draw_flag
+  bne .done
+
+  lda num_objects
+  eor #$01
+  sta num_objects 
+.done:
+
+PressB:
+  lda buttons 
+  and #BUTTON_B
+  beq .done
+
+.done:
+
 PressSelect:
   LDA buttons
-  AND #%00100000
-  BEQ PressSelectDone
+  AND #BUTTON_SELECT
+  BEQ .done
+.done:
 
-  JSR sound_disable 
-PressSelectDone:
-
-PressStart:
+PressStart:       ; to test if this works, place an asteroid at randomly generated y position
   LDA buttons
-  AND #%00010000
-  BEQ PressStartDone
+  AND #BUTTON_START
+  BEQ .done
 
-  LDA #%00111000
-  STA $4000
-
-  LDA note_ptr ; this makes 1 byte
-  ASL A   ; but, we are indexing to a table of words. So, we must multiply by 2 to make the byte into a word
-  TAY 
-  LDA note_table, y
-  STA SQ1_LOW
-  LDA note_table+1, y
-  STA SQ1_HIGH
-
-  lda #$00
-  sta note_move_flag
-PressStartDone:
+  lda #STATEPAUSE
+  sta gamestate
+  jmp GameEngineDone
+.done:
 
 MoveUp:
   LDA buttons
-  AND #%00001000
-  BEQ MoveUpDone
+  AND #BUTTON_UP
+  BEQ .done
 
-  lda draw_flag
-  bne MoveUpDone
+  lda sprite_draw_flag
+  bne .done
+
+  lda #$00
+  sta frame_count_up
 
   LDA playerY		; same logic as MoveRight here
   SEC
   SBC speedy
   STA playerY
 
-  inc draw_flag
+  inc sprite_draw_flag
 
   LDA playerY
   CMP #TOPWALL
-  BCS MoveUpDone	; must be above or equal to left wall, so carry flag SHOULD be set, not clear
+  BCS .done	    ; must be above or equal to left wall, so carry flag SHOULD be set, not clear
   LDA #TOPWALL
   STA playerY
-MoveUpDone:
+.done:
 
 MoveDown:
   LDA buttons		; first, check user input -- are they hitting down on D pad?
-  AND #%00000100
-  BEQ MoveDownDone	; if not, we are done
+  AND #BUTTON_DOWN
+  BEQ .done   	; if not, we are done
 
-  lda draw_flag
-  bne MoveDownDone
+  lda sprite_draw_flag
+  bne .done
+
+  lda #$00          ; whenever the player hits "down" on the d pad, clear the frame_count variable
+  sta frame_count_down  ; should we try to use a 16 bit number as seed?
 
   LDA playerY		; if they are, load the current Y position
-  CLC			; clear carry
+  CLC			      ; clear carry
   ADC speedy		; add the y speed to the y position
   STA playerY		; store that in the player y position
 
-  inc draw_flag
+  inc sprite_draw_flag
 
   LDA playerY		; now we must check to see if player y > wall
   CMP #BOTTOMWALL	; compare the y position to the right wall. Carry flag set if A >= M
-  BCC MoveDownDone	; if it's less than or equal, then we are done (carry flag not set if less than RIGHTWALL)
+  BCC .done	    ; if it's less than or equal, then we are done (carry flag not set if less than RIGHTWALL)
   LDA #BOTTOMWALL	; otherwise, load the wall value into the accumulator
   STA playerY		; and then set the playerX value equal to the wall
-MoveDownDone:
+.done:
 
 PressLeft:
   lda buttons
-  and #%00000010
-  beq PressLeftDone
+  and #BUTTON_LEFT
+  beq .done 
 
   lda note_move_flag
-  bne PressLeftDone
+  bne .done 
   
   dec note_ptr
   lda #$01
   sta note_move_flag
-PressLeftDone:
+.done:
 
 PressRight:
   lda buttons
-  and #%00000001
-  beq PressRightDone
+  and #BUTTON_RIGHT 
+  beq .done
 
   lda note_move_flag
-  bne PressRightDone
+  bne .done
 
   inc note_ptr
   lda #$01
   sta note_move_flag
-PressRightDone:
+.done:
 
   ; Next, we need to check for collisions
 CheckCollision:
-  JMP CheckCollisionDone
-CheckCollisionDone:
+  ; We do two things in this routine -- 
+  ; 1) check for a collision against a background object;
+  ; 2) check for a collision with a sprite
+.get_tile: ; check for background collision by reading the background value around the player
+  ; we must get the tile number of the sprite on the screen
+  ; first, we must divide playerX and playerY by the width and height of the sprite, respectively
+  lda playerX
+  lsr a
+  lsr a 
+  lsr a
+  sta buf_tile_low
+  lda #$00
+  sta buf_tile_high
 
+  ; player's tile in buffer = (playerY/width)+((playerX/width)*32) + 2; this is because we are storing columns in buffer
+  asl buf_tile_low  ; multiply by 2
+  rol buf_tile_high
+  asl buf_tile_low  ; by 4
+  rol buf_tile_high
+  asl buf_tile_low  ; by 8
+  rol buf_tile_high
+  asl buf_tile_low  ; by 16
+  rol buf_tile_high
+  asl buf_tile_low  ; by 32
+  rol buf_tile_high
+
+  lda playerY
+  lsr a 
+  lsr a 
+  lsr a 
+  clc 
+  adc buf_tile_low
+  sta buf_tile_low
+  bcc .cp_buff_ptr_to_temp_ptr
+  inc buf_tile_high
+.cp_buff_ptr_to_temp_ptr:
+  ; first, copy the start pointer to our temp pointer so we don't mess anything up
+  lda start_ptr_low
+  sta temp_ptr_low
+  lda start_ptr_high
+  sta temp_ptr_high
+.add_buf_tile_to_temp_ptr:
+  ; now, we must add our 16-bit buf_tile value to the starting address of the buffer to get our player position
+  lda temp_ptr_low 
+  clc 
+  adc buf_tile_low
+  sta temp_ptr_low 
+  bcc .add_continue
+  inc temp_ptr_high
+.add_continue:
+  lda temp_ptr_high 
+  clc 
+  adc buf_tile_high
+.bkg_chk:
+  ldy #$02  ; use y = 2 to skip our PPU address because we haven't done it yet
+  ; note we will use the y index to check whether we encounter collisions by checking y=2, y=3, y=34, and y=35
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide  ; we can stop checking if there is a single collision anywhere on the sprite
+  iny
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide
+  ldy #$22
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide
+  iny 
+  lda [temp_ptr_low], y
+  cmp #$40
+  beq .bkg_collide
+  ; if no collisions were triggered, go to .sprite_chk
+  jmp .sprite_chk
+  ; note: the above doesn't always seem to notice collisions on lower half of player...fix?
+.bkg_collide:
+  ; execute this branch if we have an asteroid collision
+  inc bkg_collision
+.sprite_chk:  ; check for sprite collision by checking the fuel's edges against the player's
+  ; this uses the following formula; all numbers must be unsigned:
+  ; if ((num - lower) <= (upper - lower)) then in_range(num)
+.s_y1:
+  lda fuel_y  ; top left corner of fuel
+  sec 
+  sbc playerY ; subtract top left corner of player position
+  cmp #$11  ; check to see if the result is in the desired range of 16 px
+  bcs .s_y2 ; the carry will only be set if A >= 17, but A must be <= 16 in order for it to be in range
+  jmp .s_x1 ; if the number was in range, then we will check for an x-axis collision
+.s_y2:  ; if number was not in range, check the other end of the fuel sprite
+  lda fuel_y ; same procedure as before, except we check for fuel+8 instead of fuel
+  clc 
+  adc #$08
+  sec 
+  sbc playerY
+  cmp #$11  ; note how it must be <= 16...so we just compare to 17, and we get the correct result
+  bcs .done 
+.s_x1:
+  lda fuel_x  ; same procedure for x as for y
+  sec 
+  sbc playerX 
+  cmp #$11
+  bcs .s_x2
+  jmp .sprite_col 
+.s_x2:
+  lda fuel_x 
+  clc 
+  adc #$08
+  sec 
+  sbc playerX 
+  cmp #$11
+  bcs .done 
+.sprite_col:  ; since we only have one fuel right now, this works, but this might need to be changed later
+  lda #%00100000
+  sta $0212
+.done:
+  ; if any of the conditions for a collision are NOT met, we go here
+
+  ; generate some random numbers and make assignments
+RandomGen:
+  jsr gen_random
+.done:
+
+  jsr put_y
   JMP GameEngineDone  ; we are done with the game engine code, so let's go to that label
 
 ;;;;;     Our Subroutines   ;;;;;
+
+;;; Draw Routine ;;;
+
+DrawRoutine:
+  lda draw_flag
+  bne DrawRoutineDone ; if the draw_flag is set, then don't do this - only once per frame!
+
+  ; update our fuel position first
+  dec fuel_x
+  lda fuel_x
+  clc 
+  adc #$04
+  cmp #LEFTWALL
+  bcs NewColumnCheck ; continue if the fuel hasn't hit the wall yet
+  ; if it has hit the wall, hide it behind the background
+  lda #%00100000
+  sta $0212
+
+  ; our nametable swap check was here, but that causes flickering; now it is in NMI with the scroll variable
+
+NewColumnCheck: ; we must first check to see if it's time to draw a new column
+  lda scroll  ; we will only draw a new column of data every 8 frames, because each tile is 8px wide
+  and #%00000111  ; see if divisible by 8
+  bne DrawRoutineDone ; if it is not time, we are done
+  ; else:
+  jsr IncPtr
+  jsr IncStartPtr ; note: generalize these as a future optimization
+  jsr DrawNewColumn ; draw column
+
+  lda columnNumber
+  clc
+  adc #$01
+  and #%00111111 ; only 64 columns of data, throw away top bits to wrap
+  sta columnNumber 
+  inc col
+  lda col
+  cmp #$22
+  bne .done
+  ; execute this only if we need to update our playerX column
+  lda #$00
+  sta col 
+.done:
+
+DrawRoutineDone:
+  inc draw_flag ; increment, even if it's already nonzero
+  rts
+
+;;; Draw a new column to the background ;;;
+
+DrawNewColumn:
+  ; calculate starting PPU address of the new column
+  ; start with low byte
+  lda scroll
+  lsr a
+  lsr a 
+  lsr a ; shifting right 3 times divides by 8
+  sta columnLow ; $00 to $1F, screen is 32 tiles wide
+  ; time for the high byte; we will use the current nametable
+  lda nametable
+  eor #$01 ; invert lowest bit -- a = #$00 or #$01
+  asl a ; a = #$00 or #$02
+  asl a ; a = #$00 or #$04
+  clc 
+  adc #$20 ; add high byte of nametable base address ($2000)
+  sta columnHigh ; this is now the high byte of the address to write to in the column
+
+  lda columnNumber
+  asl a 
+  asl a 
+  asl a 
+  asl a 
+  asl a
+  sta sourceLow 
+  lda columnNumber
+  and #%11111000
+  lsr a 
+  lsr a 
+  lsr a 
+  sta sourceHigh
+
+  LDA sourceLow       ; column data start + offset = address to load column data from
+  CLC 
+  ADC #LOW(columnData)
+  STA sourceLow
+  LDA sourceHigh
+  ADC #HIGH(columnData)
+  STA sourceHigh 
+
+DrawColumn:  
+  ldy #$00
+  lda columnHigh
+  sta [buff_ptr], Y ; $00
+  iny 
+  lda columnLow
+  sta [buff_ptr], y ; $01
+  iny
+
+  ldx #$1E
+  ; use buff_data_p to track in the loop
+  lda buff_ptr 
+  clc
+  adc #$02
+  sta buff_ptr
+
+  ldy #$00
+.loop:
+  lda [sourceLow], y
+  sta [buff_ptr], y ; buff_ptr + #$04 + y
+  iny
+  dex
+  bne .loop
+.asteroid:
+  lda num_objects
+  beq .done
+
+  ldy asteroid_y
+  lda #$40 ; asteroid graphic
+  sta [buff_ptr], y ; store the value in A at our buffer plus the y value we generated
+.done:
+  lda buff_ptr 
+  sec 
+  sbc #$02
+  sta buff_ptr 
+  rts
 
 ;;; Update our sprite positions ;;;
 
@@ -285,10 +653,14 @@ UpdateSprites:
   ADC #$08
   STA $0208
   STA $020C
-  ;; once we add in obstacles like rocks and fuel, we will update them here as well
-  ;; those routines will probably simply be decrementing the X position
+.fuel:
+  lda fuel_y
+  sta $0210
+  lda fuel_x
+  sta $0213
+.done:
   lda #$00
-  sta draw_flag
+  sta sprite_draw_flag
   RTS
 
 ;;;;; Read Controller Input ;;;;;
@@ -307,10 +679,93 @@ ReadControllerLoop:
   BNE ReadControllerLoop
   RTS
 
-vblankwait:	; subroutine for PPU initialization
-  BIT $2002
-  BPL vblankwait
-  RTS
+;;;;;     Increment buff_ptr     ;;;;;
+
+IncPtr: 
+  lda buff_ptr 
+  clc 
+  adc #$20 ; increment by 32, the number of bytes it takes per column
+  sta buff_ptr 
+  bcs .carry ; if the carry flag it set then we have overflowed, so we need to increment the high byte
+  jmp .done ; else, we are done
+.carry:
+  lda buff_ptr_high
+  cmp #$07
+  beq .reset_high_byte
+  inc buff_ptr_high  ; if we are currently not in page $07, then we are ok
+  jmp .done 
+.reset_high_byte: ; execute this if we are in page $07 and need to go back to the beginning of the buffer
+  lda #$03
+  sta buff_ptr_high
+  lda buff_ptr 
+  clc 
+  adc #$e0 
+  sta buff_ptr
+.done:
+  rts
+
+  ; FOR A FUTURE OPTIMIZATION:
+  ; Remove "IncStartPtr" and make it a general function that can take parameters
+  ; Use the stack and reserve 1 byte in zero page (or use temp_ptr...) to modify the proper variable using a pointer
+
+IncStartPtr:
+  lda start_ptr_low
+  clc 
+  adc #$20 
+  sta start_ptr_low
+  bcs .carry 
+  jmp .done
+.carry:
+  lda start_ptr_high
+  cmp #$07
+  beq .reset_high_byte
+  inc start_ptr_high
+  jmp .done 
+.reset_high_byte:
+  lda #$03
+  sta start_ptr_high
+  lda start_ptr_low
+  clc 
+  adc #$e0
+  sta start_ptr_low
+.done:
+  rts
+
+;;;;; Generate number of objects ;;;;;
+
+;; Okay so this PRNG is pretty shitty, but whatever, it will work for now
+
+gen_random:             ; generate the number of objects (asteroids/fuel) to be placed on the screen
+  ldx frame_count_down  ; we will iterate 8 times
+  lda frame_count_up+0  ; load low byte of the number of frames since last down-button press
+.loop:
+  asl a 
+  rol frame_count_up+1  ; load into high byte of 16-bit frame_count
+  bcc .done
+  eor #$2D              ; apply XOR feedback whenever a 1 is shifted out
+.done:
+  dex
+  bne .loop 
+  sta random_return 
+  cmp #$0   ; reload flags
+  rts 
+
+put_y:      ; subroutine to put our random number in the asteroid's y position
+  lda random_return
+  ; make sure the y value is between 4 and 34 ($04 and $22) - it has to fit in the buffer column
+  sec 
+  sbc #$04
+  cmp #$23
+  bcc .done ; carry will be clear if it is less than $23, so less than or equal to $22
+.adjust:  ; if it is higher than $22, subtract $22 to attempt to bring it in range
+  lda random_return
+  sec 
+  sbc #$22
+  sta random_return
+  jmp put_y ; check again
+.done:
+  sta asteroid_y
+  rts 
 
 ;---------------------------------------------------
 ;; 4th 8kb bank -- Data tables
@@ -319,24 +774,21 @@ vblankwait:	; subroutine for PPU initialization
   .org $E000
 palette:
   .db $30,$00,$10,$0F,  $0F,$36,$17,$22,  $0F,$30,$21,$22,  $0F,$27,$17,$22   ;;background palette
-  .db $22,$1C,$15,$14,  $22,$02,$38,$3C,  $22,$1C,$15,$14,  $22,$02,$38,$3C   ;;sprite palette
+  .db $22,$1C,$15,$14,  $22,$02,$38,$3C,  $0C,$17,$28,$39,  $0F,$1C,$2B,$39   ;;sprite palette
 
 sprites:
-     ;vert tile attr horiz
-  .db $80, $00, $00, $10   ;sprite 0
-  .db $80, $01, $00, $18   ;sprite 1
-  .db $88, $02, $00, $10
-  .db $88, $03, $00, $18
+      ;vert tile attr horiz
+      ;player
+  .db $80, $00, $02, $10   ;sprite 0
+  .db $80, $01, $02, $18   ;sprite 1
+  .db $88, $02, $02, $10
+  .db $88, $03, $02, $18
+      ; fuel
+  .db $00, $04, $03, $00
+      
 
-background:
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
-  .db $0F, $0E, $0D, $0C, $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $01, $00
-  .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $0A, $0B, $0C, $0D, $0E, $0F
+columnData:
+  .incbin "bkg.bin"
 
 ;---------------------------------------------------
 ;; Vectors

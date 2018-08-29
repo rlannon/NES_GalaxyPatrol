@@ -31,6 +31,7 @@ Building a .nes file in UNIX/Linux is also easy, and you can follow the same sor
 
 ## Built With
 
+<<<<<<< HEAD
 - [Visual Studio Code](https://code.visualstudio.com/) - text editor
 - NESASM3 - to make .nes files from assembly
 - FCEUX - NES emulator
@@ -38,6 +39,15 @@ Building a .nes file in UNIX/Linux is also easy, and you can follow the same sor
 ## Authors
 
 - _Riley Lannon_ - Programmer and debugger
+=======
+* [Visual Studio Code]() - text editor
+* [NESASM3]() - to make .nes files from assembly
+* [FCEUX]() - NES emulator
+
+## Authors
+
+* _Riley Lannon_ - Programmer and debugger
+>>>>>>> Graphics-Buffer
 
 ## License
 
