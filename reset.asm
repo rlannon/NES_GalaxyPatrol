@@ -73,9 +73,10 @@ PlayerVariablesInit:
   sta asteroid_y
   
   sta col
-
   sta bkg_collision
-  
+  sta buf_tile_low
+  sta buf_tile_high
+
   lda #$60
   sta fuel_x
   sta fuel_y
@@ -84,10 +85,14 @@ PlayerVariablesInit:
 
   ; before we draw columns, we must initialize our buffer pointer
   ; we start at $03c0 so when we increment it before drawing, it's at the correct address
+  ; we also start the start_ptr to point to address $03e0, the beginning column on screen
   lda #$c0
   sta buff_ptr
+  lda #$e0
+  sta start_ptr_low
   lda #$03
   sta buff_ptr_high
+  sta start_ptr_high
 
   lda #$20
   sta playerX_ptr_low

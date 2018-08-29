@@ -26,13 +26,24 @@ columnNumber        .rs 1
 sourceLow           .rs 1
 sourceHigh          .rs 1
 
-buff_ptr = $fe
+;;;;; Some Pointers ;;;;;
+
+buff_ptr = $fe  ; these pointers are for the column to draw next
 buff_ptr_high = $ff
+
+start_ptr_low = $f3  ; these pointers are for the address of the current first column on screen
+start_ptr_high = $f4
+
 playerX_ptr_low = $fc
 playerX_ptr_high = $fd
-col = $fb
+
 temp_ptr_low = $f9
 temp_ptr_high = $fa
+
+buf_tile_low = $f1
+buf_tile_high = $f2
+
+col = $fb
 bkg_collision = $f0
 
 playerX	          	.rs 1
@@ -386,54 +397,65 @@ CheckCollision:
   ; 1) check for a collision against a background object;
   ; 2) check for a collision with a sprite
   ; This will determine how we resolve the collision
-.bkg_chk: ; check for background collision by reading the background value around the player
-  ; we now have a pointer, stored in 2 bytes as playerX_ptr_low and playerX_ptr_high
-  ; this can track our player's posiiton in the buffer
+.get_tile: ; check for background collision by reading the background value around the player
+  ; we must get the tile number of the sprite on the screen
+  ; first, we must divide playerX and playerY by the width and height of the sprite, respectively
+  lda playerX
+  lsr a
+  lsr a 
+  lsr a
+  sta buf_tile_low
+  lda #$00
+  sta buf_tile_high
+
+  ; player's tile in buffer = (playerY/width)+((playerX/width)*32) + 2; this is because we are storing columns in buffer
+  asl buf_tile_low  ; multiply by 2
+  rol buf_tile_high
+  asl buf_tile_low  ; by 4
+  rol buf_tile_high
+  asl buf_tile_low  ; by 8
+  rol buf_tile_high
+  asl buf_tile_low  ; by 16
+  rol buf_tile_high
+  asl buf_tile_low  ; by 32
+  rol buf_tile_high
+
   lda playerY
-  lsr a
-  lsr a
-  lsr a ; divide by 8
+  lsr a 
+  lsr a 
+  lsr a 
   clc 
-  adc #$02 ; add two to skip the bytes from our PPU address in buffer
-  tay ; store in y as pointer index
-  lda [playerX_ptr_low], y ; load our X pointer indexed with tile number
-  cmp #$40  ; check to see if it's the asteroid sprite tile
-  beq .bkg_collide
-  ; let's check the next sprite down
-  iny 
-  lda [playerX_ptr_low], y 
-  cmp #$40
-  beq .bkg_collide
-  ; now let's check the sprites in the next column over
-  lda playerX_ptr_low
-  clc 
-  adc #$20
-  sta temp_ptr_low ; using temp_ptrs, increment by one column
-  lda playerX_ptr_high
-  cmp #$07
-  beq .bkg_temp_reset
-  sta temp_ptr_high
-  inc temp_ptr_high
-  jmp .bkg_continue
-.bkg_temp_reset:
-  lda #$03
-  sta temp_ptr_high
-  lda temp_ptr_low
-  clc 
-  adc #$e0 
+  adc buf_tile_low
+  sta buf_tile_low
+  bcc .cp_buff_ptr_to_temp_ptr
+  inc buf_tile_high
+.cp_buff_ptr_to_temp_ptr:
+  ; first, copy the start pointer to our temp pointer so we don't mess anything up
+  lda start_ptr_low
   sta temp_ptr_low
-.bkg_continue:
-  dey ; since we incremented, decrement before checking next tile
-  lda [temp_ptr_low], y ; temp_ptrs have our address for the next column
+  lda start_ptr_high
+  sta temp_ptr_high
+.add_buf_tile_to_temp_ptr:
+  ; now, we must add our 16-bit buf_tile value to the starting address of the buffer to get our player position
+  lda temp_ptr_low 
+  clc 
+  adc buf_tile_low
+  sta temp_ptr_low 
+  bcc .add_continue
+  inc temp_ptr_high
+.add_continue:
+  lda temp_ptr_high 
+  clc 
+  adc buf_tile_high
+  bcs .return_to_buffer_org
+  jmp .bkg_chk
+.return_to_buffer_org:
+  ; this is only to be run if we skip past the end of the buffer and must return...
+.bkg_chk:
+  ldy #$02  ; use y = 2 to skip our PPU address because we haven't done it yet
+  lda [temp_ptr_low], y
   cmp #$40
-  beq .bkg_collide
-  ; and see if it's the next one
-  iny 
-  lda [temp_ptr_low], y 
-  cmp #$40
-  beq .bkg_collide
-  ; if none of them have an asteroid, check the sprites
-  jmp .sprite_chk
+  bne .sprite_chk
 .bkg_collide:
   ; execute this branch if we have an asteroid collision
   inc bkg_collision
@@ -511,6 +533,7 @@ NewColumnCheck: ; we must first check to see if it's time to draw a new column
   bne DrawRoutineDone ; if it is not time, we are done
   ; else:
   jsr IncPtr
+  jsr IncStartPtr ; note: generalize these as a future optimization
   jsr DrawNewColumn ; draw column
 
   lda columnNumber
@@ -572,7 +595,6 @@ DrawNewColumn:
   ADC #HIGH(columnData)
   STA sourceHigh 
 
-  ;jsr IncPtr
 DrawColumn:  
   ldy #$00
   lda columnHigh
@@ -669,28 +691,34 @@ IncPtr:
   adc #$e0 
   sta buff_ptr
 .done:
+  rts
 
-.player:
-  lda playerX_ptr_low 
+  ; FOR A FUTURE OPTIMIZATION:
+  ; Remove "IncStartPtr" and make it a general function that can take parameters
+  ; Use the stack and reserve 1 byte in zero page (or use temp_ptr...) to modify the proper variable using a pointer
+
+IncStartPtr:
+  lda start_ptr_low
   clc 
-  adc #$20
-  sta playerX_ptr_low
-  bcc .rts 
-  ; gets executed if C is set
-  lda playerX_ptr_high 
-  cmp #$07 
-  beq .player_reset 
-  inc playerX_ptr_high
-  jmp .rts 
-.player_reset:
+  adc #$20 
+  sta start_ptr_low
+  bcs .carry 
+  jmp .done
+.carry:
+  lda start_ptr_high
+  cmp #$07
+  beq .reset_high_byte
+  inc start_ptr_high
+  jmp .done 
+.reset_high_byte:
   lda #$03
-  sta playerX_ptr_high
-  lda playerX_ptr_low
+  sta start_ptr_high
+  lda start_ptr_low
   clc 
-  adc #$e0 
-  sta playerX_ptr_low
-.rts:
-  rts 
+  adc #$e0
+  sta start_ptr_low
+.done:
+  rts
 
 ;;;;; Generate number of objects ;;;;;
 
