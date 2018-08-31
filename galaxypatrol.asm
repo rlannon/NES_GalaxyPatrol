@@ -40,11 +40,15 @@ playerX_ptr_high = $fd
 temp_ptr_low = $f9
 temp_ptr_high = $fa
 
+addr_low = $f5 ; to be used for passing an address as an argument
+addr_high = $f6 ; because we may need temp_ptr at the same time
+
 buf_tile_low = $f1
 buf_tile_high = $f2
 
 col = $fb
-bkg_collision = $f0
+
+bkg_col_flag        .rs 1
 
 playerX	          	.rs 1
 playerY	           	.rs 1
@@ -126,8 +130,6 @@ main_loop:
   jsr GameEngine
 
   inc sleep_flag
-
-  jsr DrawRoutine
 
   jmp main_loop 
 
@@ -251,7 +253,6 @@ GameEngine:
   CMP #STATEPLAYING
   BEQ EnginePlaying	;; game is in the game loop
 GameEngineDone:
-  JSR UpdateSprites	;; update all sprites once we are done with the game engine
   RTS
 
 ;;;;; Our Game Engine Routines
@@ -260,6 +261,10 @@ EngineTitle:  ; what do we do on the title screen?
   JMP GameEngineDone	;; Unconditional jump to GameEngineDone so we can continue with the loop
 
 EngineGameOver:
+  lda bkg_col_flag
+  beq .done ; skip the next segment of code if we have already drawn
+  jsr DrawGameOver
+.done:
   JMP GameEngineDone
 
 EnginePause:          ; create a "pause" screen here
@@ -469,7 +474,10 @@ CheckCollision:
   ; note: the above doesn't always seem to notice collisions on lower half of player...fix?
 .bkg_collide:
   ; execute this branch if we have an asteroid collision
-  inc bkg_collision
+  lda #STATEGAMEOVER  ; change the gamestate on game over
+  sta gamestate
+  inc bkg_col_flag
+  jmp EngineGameOver
 .sprite_chk:  ; check for sprite collision by checking the fuel's edges against the player's
   ; this uses the following formula; all numbers must be unsigned:
   ; if ((num - lower) <= (upper - lower)) then in_range(num)
@@ -513,8 +521,9 @@ CheckCollision:
 RandomGen:
   jsr gen_random
 .done:
-
   jsr put_y
+  jsr DrawRoutine ;only need to update the graphics when we aren't in pause or game over modes
+  jsr UpdateSprites
   JMP GameEngineDone  ; we are done with the game engine code, so let's go to that label
 
 ;;;;;     Our Subroutines   ;;;;;
@@ -543,9 +552,34 @@ NewColumnCheck: ; we must first check to see if it's time to draw a new column
   and #%00000111  ; see if divisible by 8
   bne DrawRoutineDone ; if it is not time, we are done
   ; else:
+  ; before we do IncPtr, we must transfer our values to our temp_ptr
+  lda buff_ptr
+  sta temp_ptr_low
+  lda buff_ptr_high
+  sta temp_ptr_high
   jsr IncPtr
-  jsr IncStartPtr ; note: generalize these as a future optimization
-  jsr DrawNewColumn ; draw column
+  ; and we must transfer them back afterward
+  lda temp_ptr_low
+  sta buff_ptr
+  lda temp_ptr_high
+  sta buff_ptr_high
+  ; now, in order to increment the start pointer, we must transfer those values to temp_ptr, as we did earlier
+  lda start_ptr_low
+  sta temp_ptr_low
+  lda start_ptr_high
+  sta temp_ptr_high
+  jsr IncPtr
+  lda temp_ptr_low
+  sta start_ptr_low
+  lda temp_ptr_high
+  sta start_ptr_high
+  ; draw column
+  ; to generalize, use temp_ptr to hold the address of columnData
+  lda #LOW(columnData)
+  sta temp_ptr_low
+  lda #HIGH(columnData)
+  sta temp_ptr_high
+  jsr DrawNewColumn
 
   lda columnNumber
   clc
@@ -600,10 +634,10 @@ DrawNewColumn:
 
   LDA sourceLow       ; column data start + offset = address to load column data from
   CLC 
-  ADC #LOW(columnData)
+  ADC temp_ptr_low
   STA sourceLow
   LDA sourceHigh
-  ADC #HIGH(columnData)
+  ADC temp_ptr_high
   STA sourceHigh 
 
 DrawColumn:  
@@ -682,52 +716,26 @@ ReadControllerLoop:
 ;;;;;     Increment buff_ptr     ;;;;;
 
 IncPtr: 
-  lda buff_ptr 
+  ; this subroutine uses temp_ptr now instead of buff_ptr--this is a memory space optimization
+  lda temp_ptr_low
   clc 
   adc #$20 ; increment by 32, the number of bytes it takes per column
-  sta buff_ptr 
+  sta temp_ptr_low 
   bcs .carry ; if the carry flag it set then we have overflowed, so we need to increment the high byte
   jmp .done ; else, we are done
 .carry:
-  lda buff_ptr_high
+  lda temp_ptr_high
   cmp #$07
   beq .reset_high_byte
-  inc buff_ptr_high  ; if we are currently not in page $07, then we are ok
+  inc temp_ptr_high  ; if we are currently not in page $07, then we are ok
   jmp .done 
 .reset_high_byte: ; execute this if we are in page $07 and need to go back to the beginning of the buffer
   lda #$03
-  sta buff_ptr_high
-  lda buff_ptr 
+  sta temp_ptr_high
+  lda temp_ptr_low
   clc 
   adc #$e0 
-  sta buff_ptr
-.done:
-  rts
-
-  ; FOR A FUTURE OPTIMIZATION:
-  ; Remove "IncStartPtr" and make it a general function that can take parameters
-  ; Use the stack and reserve 1 byte in zero page (or use temp_ptr...) to modify the proper variable using a pointer
-
-IncStartPtr:
-  lda start_ptr_low
-  clc 
-  adc #$20 
-  sta start_ptr_low
-  bcs .carry 
-  jmp .done
-.carry:
-  lda start_ptr_high
-  cmp #$07
-  beq .reset_high_byte
-  inc start_ptr_high
-  jmp .done 
-.reset_high_byte:
-  lda #$03
-  sta start_ptr_high
-  lda start_ptr_low
-  clc 
-  adc #$e0
-  sta start_ptr_low
+  sta temp_ptr_low
 .done:
   rts
 
@@ -765,7 +773,90 @@ put_y:      ; subroutine to put our random number in the asteroid's y position
   jmp put_y ; check again
 .done:
   sta asteroid_y
-  rts 
+  rts
+
+;;;;; Draw the "Game Over" Screen ;;;;;
+
+DrawGameOver:
+  ; this is the routine for drawing our game over screen
+.init:
+  ; disable PPU
+  lda #$00
+  sta $2000
+  sta $2001 ; disable PPU rendering, NMI
+  ; reset buffer
+  lda #$03
+  sta buff_ptr_high
+  lda #$c0  ; use $03c0 so we can IncPtr at the top of each loop
+  sta buff_ptr
+  ; reset the nametable and scroll positions
+  lda #$01
+  sta nametable
+  lda #$00
+  sta scroll
+  sta columnNumber 
+  lda #$04
+  sta $2000 ; PPU +32 mode
+.loop:
+  ; transfer buff_ptr to temp_ptr before calling IncPtr
+  lda buff_ptr
+  sta temp_ptr_low
+  lda buff_ptr_high
+  sta temp_ptr_high
+  jsr IncPtr
+  ; transfer them back upon increment
+  lda temp_ptr_low
+  sta buff_ptr 
+  lda temp_ptr_high
+  sta buff_ptr_high
+  ; load temp_ptr with our column data
+  lda #LOW(gameOverBackground)
+  sta temp_ptr_low
+  lda #HIGH(gameOverBackground)
+  sta temp_ptr_high
+  jsr DrawNewColumn
+  lda scroll 
+  clc
+  adc #$08
+  sta scroll 
+  inc columnNumber
+  ; since NMI is disabled, store in nametable
+  ldy #$00
+  ldx #$1e
+
+  lda $2002 ; reset latch
+  lda [buff_ptr], y
+  sta $2006
+  iny 
+  lda [buff_ptr], y
+  sta $2006
+  iny 
+.transfer:
+  lda [buff_ptr], y 
+  sta $2007
+  iny 
+  dex 
+  bne .transfer
+.transferdone:
+  lda #$00
+  sta draw_flag 
+
+  lda columnNumber
+  cmp #$20
+  bne .loop
+.drawdone:
+  ; clear the draw flag so we only execute this once
+  lda #$00
+  sta bkg_col_flag
+  ; enable PPU rendering and such
+  lda #$00
+  sta $2005
+  sta $2005
+  lda #%00010000
+  sta $2000 ; ppu +1 mode, enable bkg patterns from pattern table 1
+  lda #%00001010  ; enable background
+  sta $2001
+  rts
 
 ;---------------------------------------------------
 ;; 4th 8kb bank -- Data tables
@@ -789,6 +880,9 @@ sprites:
 
 columnData:
   .incbin "bkg.bin"
+
+gameOverBackground:
+  .incbin "gameover.bin"
 
 ;---------------------------------------------------
 ;; Vectors

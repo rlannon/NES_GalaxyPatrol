@@ -73,7 +73,6 @@ PlayerVariablesInit:
   sta asteroid_y
   
   sta col
-  sta bkg_collision
   sta buf_tile_low
   sta buf_tile_high
 
@@ -132,7 +131,22 @@ InitializeNametables: ; initialize our nametables with our starting background
   lda #%00000100
   sta $2000
 .loop:
+  ; transfer buff_ptr to temp_ptr before calling IncPtr
+  lda buff_ptr
+  sta temp_ptr_low
+  lda buff_ptr_high
+  sta temp_ptr_high
   jsr IncPtr
+  ; and transfer them back after
+  lda temp_ptr_low
+  sta buff_ptr
+  lda temp_ptr_high
+  sta buff_ptr_high
+  ; load the temp_ptr with our columndata
+  lda #LOW(columnData)
+  sta temp_ptr_low
+  lda #HIGH(columnData)
+  sta temp_ptr_high
   jsr DrawNewColumn ; draw bg column
   lda scroll ; get column
   clc 
@@ -170,7 +184,22 @@ InitializeNametables: ; initialize our nametables with our starting background
   sta nametable ; go to next nametable
   sta scroll ; set scroll pos to zero
 
+  ; again, transfer buff_ptr to temp_ptr first
+  lda buff_ptr
+  sta temp_ptr_low
+  lda buff_ptr_high
+  sta temp_ptr_high
   jsr IncPtr
+  ; again, transfer back after
+  lda temp_ptr_low
+  sta buff_ptr
+  lda temp_ptr_high
+  sta buff_ptr_high
+  ; again, load temp_ptr with addr of columnData
+  lda #LOW(columnData)
+  sta temp_ptr_low
+  lda #HIGH(columnData)
+  sta temp_ptr_high
   jsr DrawNewColumn ; draw first column of second nametable
 
   inc columnNumber  ; update column number and scroll position
