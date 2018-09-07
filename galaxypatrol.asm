@@ -52,6 +52,8 @@ bkg_col_flag        .rs 1
 
 playerX	          	.rs 1
 playerY	           	.rs 1
+y_tmp               .rs 1 ; used in our check routine to check and adjust player's Y position
+
 speedy	          	.rs 1 ; player's speed in the y direction
 speedx		          .rs 1 ; object's speed in the x direction
 asteroid_y          .rs 1 ; used to count the asteroid's y position
@@ -398,13 +400,27 @@ PressRight:
 
   ; Next, we need to check for collisions
 CheckCollision:
+
+  ;;;;;;;;;;    NOTE    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  ;   This routine is not perfect. It still needs some adjusing
+  ;   However, it works decently well for now and will be fine until
+  ;     I come up with a little more sophisticated algorithm for it
+
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
   ; We do two things in this routine -- 
   ; 1) check for a collision against a background object;
   ; 2) check for a collision with a sprite
+
+  ; first, load our index and transfer playerX and playerY to x_tmp and y_tmp
+  ldx #$02 
+  lda playerY 
+  sta y_tmp 
 .get_tile: ; check for background collision by reading the background value around the player
   ; we must get the tile number of the sprite on the screen
   ; first, we must divide playerX and playerY by the width and height of the sprite, respectively
-  lda playerX
+  lda playerX 
   lsr a
   lsr a 
   lsr a
@@ -424,7 +440,7 @@ CheckCollision:
   asl buf_tile_low  ; by 32
   rol buf_tile_high
 
-  lda playerY
+  lda y_tmp 
   lsr a 
   lsr a 
   lsr a 
@@ -452,24 +468,21 @@ CheckCollision:
   clc 
   adc buf_tile_high
 .bkg_chk:
-  ldy #$02  ; use y = 2 to skip our PPU address because we haven't done it yet
-  ; note we will use the y index to check whether we encounter collisions by checking y=2, y=3, y=34, and y=35
+  ldy #$22  ; use y = 34 to check the tile to the right of where we just checked
+  ; note we will use the y index to check whether we encounter collisions by checking y=2 and y=34
   lda [temp_ptr_low], y
   cmp #$40
   beq .bkg_collide  ; we can stop checking if there is a single collision anywhere on the sprite
-  iny
-  lda [temp_ptr_low], y
-  cmp #$40
-  beq .bkg_collide
-  ldy #$22
-  lda [temp_ptr_low], y
-  cmp #$40
-  beq .bkg_collide
-  iny 
-  lda [temp_ptr_low], y
-  cmp #$40
-  beq .bkg_collide
-  ; if no collisions were triggered, go to .sprite_chk
+  ; if no collisions were triggered, loop again, or check sprites once we have done that
+  ; increment our player's y position
+  lda y_tmp 
+  clc 
+  adc #$10
+  sta y_tmp
+  dex
+  ; cpx #$00 
+  bne .get_tile
+  ; if we have done this twice, check our sprites
   jmp .sprite_chk
   ; note: the above doesn't always seem to notice collisions on lower half of player...fix?
 .bkg_collide:
