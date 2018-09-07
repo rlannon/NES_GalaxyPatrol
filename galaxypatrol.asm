@@ -477,7 +477,12 @@ CheckCollision:
   lda #STATEGAMEOVER  ; change the gamestate on game over
   sta gamestate
   inc bkg_col_flag
-  jmp EngineGameOver
+  lda #$00
+  sta num_objects ; we must NOT draw any asteroids to the screen in our Game Over draw code
+  ; before, we weren't resetting num_objects, and so it was still writing asteroids into the buffer in DrawColumn
+  ; but, because the PPU was set to +1 mode by the time this happened, it was drawing them in a line
+  ; storing 0 in num_objects will display only "GAME OVER" on a black background, with no asteroid objects
+  jmp EngineGameOver  ; no sense doing any of these other checks, jump straight to the game over loop
 .sprite_chk:  ; check for sprite collision by checking the fuel's edges against the player's
   ; this uses the following formula; all numbers must be unsigned:
   ; if ((num - lower) <= (upper - lower)) then in_range(num)
@@ -798,7 +803,7 @@ DrawGameOver:
   lda #$04
   sta $2000 ; PPU +32 mode
 .loop:
-  ; transfer buff_ptr to temp_ptr before calling IncPtr
+  ; transfer buff_ptr to temp_ptr before calling IncPtr, as IncPtr increments the temp_ptr
   lda buff_ptr
   sta temp_ptr_low
   lda buff_ptr_high
@@ -836,6 +841,7 @@ DrawGameOver:
   sta $2007
   iny 
   dex 
+  ; cpx #$00
   bne .transfer
 .transferdone:
   lda #$00
